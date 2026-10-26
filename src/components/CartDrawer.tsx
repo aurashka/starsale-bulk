@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { CartItem, WholesaleOrder, WholesaleUser } from '../types.ts';
 import { createWholesaleOrder } from '../services/dataService.ts';
+import { formatPrice } from '../utils/format.ts';
 
 interface CartDrawerProps {
   isOpen: boolean;
@@ -68,6 +69,9 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       id: `order-${Date.now()}`,
       orderNumber,
       createdAt: Date.now(),
+      userId: currentUser?.uid || (phone ? `usr_${phone.replace(/\D/g, '')}` : `guest_${Date.now()}`),
+      trackingStep: 1,
+      trackingBiltiNumber: `VRL-${Math.floor(100000 + Math.random() * 900000)}`,
       customerName: customerName || 'Retail Partner',
       companyName: companyName || 'B2B Retail Store',
       email: email || 'buyer@business.in',
@@ -79,6 +83,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       gstin: gstin || undefined,
       transportPreference,
       notes: notes || undefined,
+      statusNote: 'Consignment order received. Pending dispatch desk review.',
       items: items.map(item => ({
         productId: item.product.id,
         productName: item.product.name,
@@ -174,7 +179,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 </div>
                 <div className="flex justify-between text-sm font-black pt-2 border-t border-neutral-200">
                   <span>Invoice Total (₹ INR):</span>
-                  <span className="text-red-600">₹{placedOrder.totalAmount.toLocaleString('en-IN')}</span>
+                  <span className="text-red-600">₹{formatPrice(placedOrder?.totalAmount)}</span>
                 </div>
               </div>
 
@@ -347,7 +352,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 </div>
                 <div className="flex justify-between text-neutral-900 font-black text-sm pt-1 border-t border-neutral-200">
                   <span>Payable Amount (₹ INR):</span>
-                  <span className="text-red-600">₹{finalTotal.toLocaleString('en-IN')}</span>
+                  <span className="text-red-600">₹{formatPrice(finalTotal)}</span>
                 </div>
               </div>
 
@@ -364,7 +369,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                   disabled={isSubmitting}
                   className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white rounded-full font-black transition-all shadow-md disabled:opacity-50"
                 >
-                  {isSubmitting ? 'Booking Order...' : `Book Lot (₹${finalTotal.toLocaleString('en-IN')})`}
+                  {isSubmitting ? 'Booking Order...' : `Book Lot (₹${formatPrice(finalTotal)})`}
                 </button>
               </div>
             </form>
@@ -404,7 +409,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                             <span className="truncate">{item.selectedColor}</span>
                           </div>
                           <div className="text-xs font-black text-red-600 font-heading mt-1">
-                            ₹{item.appliedUnitPrice.toLocaleString('en-IN')}
+                            ₹{formatPrice(item?.appliedUnitPrice)}
                             <span className="text-[10px] font-normal text-neutral-400 ml-1">/pc</span>
                           </div>
                         </div>
@@ -455,7 +460,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             {bulkSavings > 0 && (
               <div className="bg-emerald-50 border border-emerald-300 rounded-xl px-3 py-1.5 flex items-center justify-between text-xs text-emerald-800">
                 <span className="font-bold">Total Bulk Discount Profit:</span>
-                <span className="font-black text-emerald-700">-₹{bulkSavings.toLocaleString('en-IN')}</span>
+                <span className="font-black text-emerald-700">-₹{formatPrice(bulkSavings)}</span>
               </div>
             )}
 
@@ -464,7 +469,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               <div>
                 <span className="text-[11px] text-neutral-500 uppercase tracking-wider font-bold">Total (₹ INR)</span>
                 <div className="text-2xl font-black text-neutral-900 font-heading">
-                  ₹{subtotal.toLocaleString('en-IN')}
+                  ₹{formatPrice(subtotal)}
                 </div>
               </div>
 

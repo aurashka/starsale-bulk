@@ -11,6 +11,17 @@ import {
   orderBy 
 } from 'firebase/firestore';
 import { 
+  getDatabase, 
+  ref, 
+  set, 
+  get, 
+  child, 
+  onValue, 
+  push, 
+  update,
+  remove 
+} from 'firebase/database';
+import { 
   getAuth, 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
@@ -32,6 +43,7 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 export const db = getFirestore(app);
+export const rtdb = getDatabase(app);
 
 export {
   collection,
@@ -42,6 +54,14 @@ export {
   onSnapshot,
   query,
   orderBy,
+  ref,
+  set,
+  get,
+  child,
+  onValue,
+  push,
+  update,
+  remove,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   signOut,

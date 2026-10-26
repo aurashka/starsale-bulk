@@ -1,4 +1,54 @@
-import { Product } from '../types.ts';
+import { Product, CategoryItem, HeroSlide } from '../types.ts';
+
+export const DEFAULT_HERO_SLIDES: HeroSlide[] = [
+  {
+    id: 'hero-1',
+    tag: 'India B2B Bulk Sourcing',
+    title: 'Tirupur &\nSurat Rates',
+    subtitle: 'Direct mill prices for boutiques, retail showrooms & online brands.',
+    badge: 'Up to 35% Bulk Margin',
+    badgeColor: 'bg-emerald-700 text-white',
+    imageUrl: 'https://images.unsplash.com/photo-1512436991641-6745cdb1723f?auto=format&fit=crop&w=1800&q=80',
+    linkedProductId: 'prod-heavy-sweater',
+    buttonText: 'Browse Wholesale Lot',
+    sequence: 1
+  },
+  {
+    id: 'hero-2',
+    tag: 'Heavyweight Streetwear Blanks (₹ INR)',
+    title: '450 GSM\nFleece Lots',
+    subtitle: 'Drop-shoulder hoodies, ribbed waffle knitwear & acid wash denim.',
+    badge: 'MOQ from only 10 pcs',
+    badgeColor: 'bg-red-800 text-white',
+    imageUrl: 'https://images.unsplash.com/photo-1576566588028-4147f3842f27?auto=format&fit=crop&w=1800&q=80',
+    linkedProductId: 'prod-ashwave-denim',
+    buttonText: 'Browse Denim Lot',
+    sequence: 2
+  },
+  {
+    id: 'hero-3',
+    tag: 'Fast Indian Transport Dispatch',
+    title: 'Resort\nWorkwear',
+    subtitle: 'Vertical striped resort shirts, heavy cotton poplin & vintage skaters.',
+    badge: 'Full GST 5% Invoice Credit',
+    badgeColor: 'bg-neutral-800 text-white',
+    imageUrl: 'https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=1800&q=80',
+    linkedProductId: 'prod-striped-work-shirt',
+    buttonText: 'Browse Workwear Lot',
+    sequence: 3
+  }
+];
+
+export const INITIAL_CATEGORIES: CategoryItem[] = [
+  { id: 'all', name: 'All Wholesale Lots' },
+  { id: 'Sweaters', name: 'Knitwear & Sweaters' },
+  { id: 'Jackets', name: 'Denim & Heavy Jackets' },
+  { id: 'Shirts', name: 'Casual & Workwear Shirts' },
+  { id: 'Hoodies', name: 'Fleece Hoodies (450 GSM)' },
+  { id: 'Pants', name: 'Skater Denim & Cargo' },
+  { id: 'Shoes', name: 'Court Sneakers' },
+  { id: 'Hats', name: 'Beanies & Caps' }
+];
 
 export const INITIAL_PRODUCTS: Product[] = [
   {
@@ -22,6 +72,12 @@ export const INITIAL_PRODUCTS: Product[] = [
     isNew: true,
     isTrending: true,
     isFeatured: true,
+    displayPlacement: 'both',
+    showInHorizontal: true,
+    horizontalSequence: 1,
+    showInVertical: true,
+    verticalSequence: 1,
+    sequence: 1,
     bulkTiers: [
       { minQty: 10, maxQty: 49, unitPrice: 749, label: 'Tier 1 (10-49 pcs)' },
       { minQty: 50, maxQty: 99, unitPrice: 689, label: 'Tier 2 (50-99 pcs)' },
@@ -49,6 +105,12 @@ export const INITIAL_PRODUCTS: Product[] = [
     isNew: true,
     isTrending: true,
     isFeatured: true,
+    displayPlacement: 'both',
+    showInHorizontal: true,
+    horizontalSequence: 2,
+    showInVertical: true,
+    verticalSequence: 2,
+    sequence: 2,
     bulkTiers: [
       { minQty: 5, maxQty: 24, unitPrice: 1199, label: 'Tier 1 (5-24 pcs)' },
       { minQty: 25, maxQty: 49, unitPrice: 1080, label: 'Tier 2 (25-49 pcs)' },
@@ -74,6 +136,12 @@ export const INITIAL_PRODUCTS: Product[] = [
       'https://images.unsplash.com/photo-1598033129183-c4f50c736f10?auto=format&fit=crop&w=1000&q=80'
     ],
     isTrending: true,
+    displayPlacement: 'both',
+    showInHorizontal: true,
+    horizontalSequence: 3,
+    showInVertical: true,
+    verticalSequence: 3,
+    sequence: 3,
     bulkTiers: [
       { minQty: 15, maxQty: 49, unitPrice: 549, label: 'Tier 1 (15-49 pcs)' },
       { minQty: 50, maxQty: 99, unitPrice: 489, label: 'Tier 2 (50-99 pcs)' },
@@ -100,6 +168,12 @@ export const INITIAL_PRODUCTS: Product[] = [
     ],
     isFeatured: true,
     isTrending: true,
+    displayPlacement: 'both',
+    showInHorizontal: true,
+    horizontalSequence: 4,
+    showInVertical: true,
+    verticalSequence: 4,
+    sequence: 4,
     bulkTiers: [
       { minQty: 10, maxQty: 49, unitPrice: 820, label: 'Tier 1 (10-49 pcs)' },
       { minQty: 50, maxQty: 99, unitPrice: 740, label: 'Tier 2 (50-99 pcs)' },
@@ -124,6 +198,12 @@ export const INITIAL_PRODUCTS: Product[] = [
       'https://images.unsplash.com/photo-1582552938357-32b906df40cb?auto=format&fit=crop&w=1000&q=80'
     ],
     isTrending: true,
+    displayPlacement: 'both',
+    showInHorizontal: true,
+    horizontalSequence: 5,
+    showInVertical: true,
+    verticalSequence: 5,
+    sequence: 5,
     bulkTiers: [
       { minQty: 10, maxQty: 29, unitPrice: 780, label: 'Tier 1 (10-29 pcs)' },
       { minQty: 30, maxQty: 74, unitPrice: 710, label: 'Tier 2 (30-74 pcs)' },
@@ -147,6 +227,12 @@ export const INITIAL_PRODUCTS: Product[] = [
       'https://images.unsplash.com/photo-1603252109303-2751441dd157?auto=format&fit=crop&w=1000&q=80',
       'https://images.unsplash.com/photo-1589310243389-96a5483213a8?auto=format&fit=crop&w=1000&q=80'
     ],
+    displayPlacement: 'vertical',
+    showInHorizontal: false,
+    horizontalSequence: 6,
+    showInVertical: true,
+    verticalSequence: 6,
+    sequence: 6,
     bulkTiers: [
       { minQty: 12, maxQty: 39, unitPrice: 499, label: 'Tier 1 (12-39 pcs)' },
       { minQty: 40, maxQty: 99, unitPrice: 440, label: 'Tier 2 (40-99 pcs)' },
@@ -170,6 +256,12 @@ export const INITIAL_PRODUCTS: Product[] = [
       'https://images.unsplash.com/photo-1595950653106-6c9ebd614d3a?auto=format&fit=crop&w=1000&q=80',
       'https://images.unsplash.com/photo-1552346154-21d32810aba3?auto=format&fit=crop&w=1000&q=80'
     ],
+    displayPlacement: 'horizontal',
+    showInHorizontal: true,
+    horizontalSequence: 6,
+    showInVertical: false,
+    verticalSequence: 7,
+    sequence: 7,
     bulkTiers: [
       { minQty: 8, maxQty: 23, unitPrice: 920, label: 'Tier 1 (8-23 pairs)' },
       { minQty: 24, maxQty: 49, unitPrice: 840, label: 'Tier 2 (24-49 pairs)' },
@@ -193,23 +285,18 @@ export const INITIAL_PRODUCTS: Product[] = [
       'https://images.unsplash.com/photo-1576871337632-b9aef4c17ab9?auto=format&fit=crop&w=1000&q=80',
       'https://images.unsplash.com/photo-1534215754734-18e55d13e346?auto=format&fit=crop&w=1000&q=80'
     ],
+    displayPlacement: 'both',
+    showInHorizontal: true,
+    horizontalSequence: 7,
+    showInVertical: true,
+    verticalSequence: 7,
+    sequence: 8,
     bulkTiers: [
       { minQty: 25, maxQty: 99, unitPrice: 175, label: 'Tier 1 (25-99 pcs)' },
       { minQty: 100, maxQty: 249, unitPrice: 145, label: 'Tier 2 (100-249 pcs)' },
       { minQty: 250, unitPrice: 115, label: 'Tier 3 (250+ pcs bulk)' }
     ]
   }
-];
-
-export const CATEGORIES = [
-  { id: 'all', name: 'All Wholesale Lots', count: 8 },
-  { id: 'Sweaters', name: 'Knitwear & Sweaters', count: 1 },
-  { id: 'Jackets', name: 'Denim & Heavy Jackets', count: 1 },
-  { id: 'Shirts', name: 'Casual & Workwear Shirts', count: 2 },
-  { id: 'Hoodies', name: 'Fleece Hoodies (450 GSM)', count: 1 },
-  { id: 'Pants', name: 'Skater Denim & Cargo', count: 1 },
-  { id: 'Shoes', name: 'Court Sneakers', count: 1 },
-  { id: 'Hats', name: 'Beanies & Caps', count: 1 }
 ];
 
 export const SAMPLE_IMAGE_PRESETS = [
@@ -222,3 +309,30 @@ export const SAMPLE_IMAGE_PRESETS = [
   { label: 'Watch Beanie', url: 'https://images.unsplash.com/photo-1576871337632-b9aef4c17ab9?auto=format&fit=crop&w=1000&q=80' },
   { label: 'Boxy Heavy Tee 280 GSM', url: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?auto=format&fit=crop&w=1000&q=80' }
 ];
+
+export const DEFAULT_FOOTER_INFO = {
+  brandTitle: 'STARDOT',
+  brandSubtitle: 'B2B INDIA',
+  aboutText: 'Industrial B2B textile & apparel manufacturing supplier. Serving streetwear brands, boutiques, and retail chains across India.',
+  b2bPhone: '+91 98765 43210',
+  supportEmail: 'support@stardot.in',
+  supportHours: 'Mon - Sat: 9:00 AM - 8:00 PM IST',
+  gstin: '27AABCS9821R1Z8',
+  hsnCode: '6109 / 6203 Apparel',
+  wholesaleHubs: [
+    'Tirupur Knitwear Mill Dispatch',
+    'Surat Fabric & Denim Yards',
+    'Ludhiana Winter Fleece Facility',
+    'Mumbai & Delhi-NCR Godowns',
+    'Bengaluru & Hyderabad Cargo'
+  ],
+  buyerFacilities: [
+    'Fabric Swatch Sample Books',
+    'Custom Relabeling & Neck Tags',
+    'Multi-Tier Bulk Slab Rates (₹)',
+    'Direct Mill Pricing Guarantee',
+    'Pallet & Master Carton Packing'
+  ],
+  bottomCopyrightText: 'Stardot Wholesale India Pvt. Ltd. All rates in Indian Rupees (₹ INR) for registered trade buyers.',
+  bottomNetworkText: 'All-India Transport Network'
+};

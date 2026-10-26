@@ -13,6 +13,7 @@ import {
   CheckCircle2
 } from 'lucide-react';
 import { Product } from '../types.ts';
+import { formatPrice } from '../utils/format.ts';
 
 interface ProductDetailModalProps {
   product: Product | null;
@@ -31,22 +32,22 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   onAddToCart,
   onDirectOrderNow
 }) => {
-  if (!product) return null;
-
   const [activeImageIdx, setActiveImageIdx] = useState(0);
-  const [selectedSize, setSelectedSize] = useState(product.sizes[0] || 'M');
-  const [selectedColor, setSelectedColor] = useState(product.colors[0] || 'Standard');
-  const [quantity, setQuantity] = useState(product.moq || 10);
+  const [selectedSize, setSelectedSize] = useState(product?.sizes?.[0] || 'M');
+  const [selectedColor, setSelectedColor] = useState(product?.colors?.[0] || 'Standard');
+  const [quantity, setQuantity] = useState(product?.moq || 10);
   const [copiedLink, setCopiedLink] = useState(false);
 
   useEffect(() => {
     if (product) {
       setActiveImageIdx(0);
-      setSelectedSize(product.sizes[0] || 'M');
-      setSelectedColor(product.colors[0] || 'Standard');
+      setSelectedSize(product.sizes?.[0] || 'M');
+      setSelectedColor(product.colors?.[0] || 'Standard');
       setQuantity(product.moq || 10);
     }
   }, [product]);
+
+  if (!product) return null;
 
   const calculateUnitPrice = (qty: number): number => {
     if (!product.bulkTiers || product.bulkTiers.length === 0) {
@@ -215,7 +216,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               </h2>
               <div className="text-right">
                 <div className="text-2xl font-black text-red-600 font-heading">
-                  ₹{currentUnitPrice.toLocaleString('en-IN')}
+                  ₹{formatPrice(currentUnitPrice)}
                 </div>
                 <span className="text-[10px] text-neutral-500 block font-semibold">per piece wholesale</span>
               </div>
@@ -268,11 +269,11 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                           : 'border-neutral-200 bg-white hover:border-neutral-400 text-neutral-800'
                       }`}
                     >
-                      <div className={`text-[10px] font-bold ${isCurrentTier ? 'text-yellow-200' : 'text-neutral-500'}`}>
+                      <div className={`text-[10px] font-bold ${isCurrentTier ? 'text-red-100' : 'text-neutral-500'}`}>
                         {tier.minQty}{tier.maxQty ? `-${tier.maxQty}` : '+'} pcs
                       </div>
                       <div className="text-sm font-black mt-0.5">
-                        ₹{tier.unitPrice.toLocaleString('en-IN')}
+                        ₹{formatPrice(tier.unitPrice)}
                         <span className="text-[9px] font-normal ml-0.5">/pc</span>
                       </div>
                     </div>
@@ -332,7 +333,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 <span className="font-bold text-neutral-900">Lot Quantity (MOQ: {product.moq} pcs):</span>
                 {savings > 0 && (
                   <span className="text-emerald-800 font-extrabold text-[11px] bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full">
-                    Bulk Profit Saved: ₹{savings.toLocaleString('en-IN')}
+                    Bulk Profit Saved: ₹{formatPrice(savings)}
                   </span>
                 )}
               </div>
@@ -368,7 +369,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 <div className="text-right flex-1">
                   <div className="text-xs text-neutral-500 font-medium">Lot Subtotal:</div>
                   <div className="text-xl font-black text-neutral-900 font-heading">
-                    ₹{totalCost.toLocaleString('en-IN')}
+                    ₹{formatPrice(totalCost)}
                   </div>
                 </div>
               </div>

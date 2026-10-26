@@ -5,6 +5,51 @@ export interface BulkTier {
   label?: string;
 }
 
+export interface CategoryItem {
+  id: string;
+  name: string;
+}
+
+export interface ProductSpecItem {
+  label: string;
+  value: string;
+}
+
+export interface ProductSpecCard {
+  id: string;
+  title: string;
+  items?: ProductSpecItem[];
+  description?: string;
+}
+
+export interface CompanyFooterInfo {
+  brandTitle: string;
+  brandSubtitle: string;
+  aboutText: string;
+  b2bPhone: string;
+  supportEmail: string;
+  supportHours: string;
+  gstin: string;
+  hsnCode: string;
+  wholesaleHubs: string[];
+  buyerFacilities: string[];
+  bottomCopyrightText: string;
+  bottomNetworkText: string;
+}
+
+export interface HeroSlide {
+  id: string;
+  tag?: string;
+  title: string;
+  subtitle: string;
+  badge?: string;
+  badgeColor?: string;
+  imageUrl: string;
+  linkedProductId?: string; // Links to pre-added catalog product
+  buttonText?: string;      // e.g. "Browse Wholesale Lot" / "View Lot"
+  sequence?: number;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -22,7 +67,14 @@ export interface Product {
   isNew?: boolean;
   isTrending?: boolean;
   isFeatured?: boolean;
+  displayPlacement?: 'both' | 'horizontal' | 'vertical'; // Horizontal, Vertical, or Both (legacy compatibility)
+  showInHorizontal?: boolean; // If true, explicitly included in horizontal scroller
+  horizontalSequence?: number; // Ordering sequence in horizontal scroller
+  showInVertical?: boolean; // If true, explicitly included in vertical catalog
+  verticalSequence?: number; // Ordering sequence in vertical catalog
+  sequence?: number; // General ordering sequence fallback (1, 2, 3...)
   bulkTiers: BulkTier[];
+  specCards?: ProductSpecCard[]; // Multiple custom cards for specs, fabric, manufacturing, wash care, etc.
   createdAt?: number;
 }
 
@@ -38,6 +90,7 @@ export interface WholesaleOrder {
   id: string;
   orderNumber: string;
   createdAt: number;
+  userId?: string;
   customerName: string;
   companyName: string;
   email: string;
@@ -46,8 +99,8 @@ export interface WholesaleOrder {
   state: string;
   pincode: string;
   shippingAddress: string;
-  gstin?: string; // Indian GSTIN number
-  transportPreference?: string; // VRL, TCI, Delhivery, Safechem, etc.
+  gstin?: string;
+  transportPreference?: string;
   items: {
     productId: string;
     productName: string;
@@ -62,8 +115,12 @@ export interface WholesaleOrder {
   subtotal: number;
   estimatedShipping: number;
   totalAmount: number;
-  status: 'Pending Review' | 'Confirmed' | 'Dispatched' | 'Delivered';
+  status: 'Pending Review' | 'Confirmed' | 'Dispatched' | 'Delivered' | 'Rejected' | 'Delivery Attempted';
+  trackingStep?: number; // 1: Confirmed, 2: Packed & Bilti, 3: In Transit, 4: Delivered, 5: Delivery Attempted, 0: Rejected
+  trackingBiltiNumber?: string;
   notes?: string;
+  statusNote?: string; // Custom message note if rejected, delivery attempted, or transit update
+  updatedAt?: number;
 }
 
 export interface WholesaleUser {
@@ -71,7 +128,7 @@ export interface WholesaleUser {
   name: string;
   email: string;
   phone: string;
-  role: 'user' | 'admin'; // Hiddenly saved as 'user' for signups; 'admin' for staff
+  role: 'user' | 'admin';
   companyName?: string;
   city?: string;
   state?: string;

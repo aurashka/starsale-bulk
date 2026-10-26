@@ -4,39 +4,49 @@ import { HeroBanner } from './components/HeroBanner.tsx';
 import { CategoryScroller } from './components/CategoryScroller.tsx';
 import { HorizontalProductScroller } from './components/HorizontalProductScroller.tsx';
 import { ProductGrid } from './components/ProductGrid.tsx';
-import { ProductDetailModal } from './components/ProductDetailModal.tsx';
+import { ProductDetailView } from './components/ProductDetailView.tsx';
 import { CartDrawer } from './components/CartDrawer.tsx';
 import { WishlistDrawer } from './components/WishlistDrawer.tsx';
 import { AuthModal } from './components/AuthModal.tsx';
+import { UserProfileModal } from './components/UserProfileModal.tsx';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { Footer } from './components/Footer.tsx';
 import { MobileNav } from './components/MobileNav.tsx';
 
-import { Product, CartItem, WholesaleUser } from './types.ts';
+import { Product, CartItem, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide } from './types.ts';
 import { 
   subscribeToProducts, 
+  subscribeToCategories,
+  subscribeToFooterInfo,
+  subscribeToHeroSlides,
+  getLocalFooterInfo,
+  getLocalHeroSlides,
   getSavedWishlist, 
   saveWishlist 
 } from './services/dataService.ts';
+import { INITIAL_CATEGORIES } from './data/defaultProducts.ts';
 
 export default function App() {
-  // Products state (synced with Firebase Firestore in real-time)
+  // Products state
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<CategoryItem[]>(INITIAL_CATEGORIES);
+  const [footerInfo, setFooterInfo] = useState<CompanyFooterInfo>(() => getLocalFooterInfo());
+  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(() => getLocalHeroSlides());
   const [loading, setLoading] = useState(true);
 
   // Search & Category
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
 
-  // Interactive Modals & Drawers
+  // Interactive views
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [isUserProfileOpen, setIsUserProfileOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
 
-
-  // User state (optional B2B buyer account)
+  // User state
   const [currentUser, setCurrentUser] = useState<WholesaleUser | null>(() => {
     try {
       const raw = localStorage.getItem('stardot_current_user');
@@ -55,7 +65,7 @@ export default function App() {
     }
   });
 
-  // Admin authentication state (only true if role === 'admin' or session active)
+  // Admin authentication state (Only active if role === 'admin')
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
     try {
       const rawUser = localStorage.getItem('stardot_current_user');
@@ -80,43 +90,41 @@ export default function App() {
   // Wishlist state
   const [wishlistIds, setWishlistIds] = useState<string[]>(() => getSavedWishlist());
 
-  // Subscribe to Firebase Products in realtime
+  // Subscribe to Products, Categories, Footer Profile & Hero Banners
   useEffect(() => {
-    const unsubscribe = subscribeToProducts((liveProducts) => {
+    const unsubProducts = subscribeToProducts((liveProducts) => {
       setProducts(liveProducts);
       setLoading(false);
     });
+
+    const unsubCategories = subscribeToCategories((liveCats) => {
+      setCategories(liveCats);
+    });
+
+    const unsubFooter = subscribeToFooterInfo((info) => {
+      setFooterInfo(info);
+    });
+
+    const unsubHero = subscribeToHeroSlides((slides) => {
+      setHeroSlides(slides);
+    });
+
     return () => {
-      if (typeof unsubscribe === 'function') unsubscribe();
+      if (typeof unsubProducts === 'function') unsubProducts();
+      if (typeof unsubCategories === 'function') unsubCategories();
+      if (typeof unsubFooter === 'function') unsubFooter();
+      if (typeof unsubHero === 'function') unsubHero();
     };
   }, []);
 
-  // Save cart to localStorage
+  // Save cart & wishlist
   useEffect(() => {
     localStorage.setItem('stardot_cart', JSON.stringify(cartItems));
   }, [cartItems]);
 
-  // Save wishlist to localStorage
   useEffect(() => {
     saveWishlist(wishlistIds);
   }, [wishlistIds]);
-
-  // Keyboard shortcut for hidden admin: Ctrl+Alt+A or Cmd+Alt+A
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.altKey && (e.key === 'a' || e.key === 'A')) {
-        e.preventDefault();
-        setIsAdminPanelOpen(true);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-
-    if (window.location.hash === '#admin' || window.location.search.includes('admin=true')) {
-      setIsAdminPanelOpen(true);
-    }
-
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   // Cart handlers
   const handleAddToCart = (
@@ -178,7 +186,6 @@ export default function App() {
     unitPrice: number
   ) => {
     handleAddToCart(product, size, color, quantity, unitPrice);
-    setSelectedProduct(null);
     setIsCartOpen(true);
   };
 
@@ -242,6 +249,7 @@ export default function App() {
     setIsAdminLoggedIn(false);
     localStorage.removeItem('stardot_current_user');
     sessionStorage.removeItem('stardot_admin_auth');
+    setIsUserProfileOpen(false);
   };
 
   const handleAdminLoginSuccess = () => {
@@ -255,167 +263,194 @@ export default function App() {
     setIsAdminPanelOpen(false);
   };
 
-  const trendingProducts = products.filter(p => p.isTrending || p.isFeatured);
-  const knitwearAndHoodies = products.filter(p => p.category === 'Sweaters' || p.category === 'Hoodies');
+  // Filter products by selective placement & custom sequence:
+  // Horizontal scroller: ONLY products with showInHorizontal === true (or legacy fallback)
+  const horizontalProducts = products
+    .filter(p => p.showInHorizontal !== undefined ? p.showInHorizontal : (!p.displayPlacement || p.displayPlacement === 'both' || p.displayPlacement === 'horizontal'))
+    .sort((a, b) => (a.horizontalSequence ?? a.sequence ?? 999) - (b.horizontalSequence ?? b.sequence ?? 999));
+
+  // Vertical catalog: ONLY products with showInVertical === true (or legacy fallback)
+  const verticalProducts = products
+    .filter(p => p.showInVertical !== undefined ? p.showInVertical : (!p.displayPlacement || p.displayPlacement === 'both' || p.displayPlacement === 'vertical'))
+    .sort((a, b) => (a.verticalSequence ?? a.sequence ?? 999) - (b.verticalSequence ?? b.sequence ?? 999));
 
   const cartTotalCount = cartItems.reduce((acc, it) => acc + it.quantity, 0);
 
   return (
-    <div className="min-h-screen bg-[#fcfcfa] text-[#121212] flex flex-col selection:bg-red-600 selection:text-white pb-16 md:pb-0">
+    <div className="min-h-screen bg-white text-neutral-900 flex flex-col selection:bg-red-800 selection:text-white pb-16 md:pb-0">
       
-      {/* Navigation Header */}
-      <Navbar
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        cartCount={cartTotalCount}
-        wishlistCount={wishlistIds.length}
-        onOpenCart={() => setIsCartOpen(true)}
-        onOpenWishlist={() => setIsWishlistOpen(true)}
-        onOpenAuth={() => setIsAuthOpen(true)}
-        currentUser={currentUser}
-        onSignOut={handleBuyerSignOut}
-        isAdminLoggedIn={isAdminLoggedIn}
-        onOpenAdminPanel={() => setIsAdminPanelOpen(true)}
-      />
-
-      {/* Main Content */}
-      <main className="flex-1">
-        
-        {/* 1. Hero Banner: Horizontal card image scroller */}
-        <HeroBanner
-          onShopNow={(cat) => {
-            if (cat) setSelectedCategory(cat);
-            const el = document.getElementById('full-catalog');
-            if (el) el.scrollIntoView({ behavior: 'smooth' });
-          }}
+      {/* 1. If user clicked a product, show the Full-Screen Product View with floating buy bar! */}
+      {selectedProduct ? (
+        <ProductDetailView
+          product={selectedProduct}
+          onBack={() => setSelectedProduct(null)}
+          isWishlisted={wishlistIds.includes(selectedProduct.id)}
+          onToggleWishlist={handleToggleWishlist}
+          onAddToCart={handleAddToCart}
+          onDirectOrderNow={handleDirectOrderNow}
         />
+      ) : (
+        <>
+          {/* Main Catalog View */}
+          <Navbar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            cartCount={cartTotalCount}
+            wishlistCount={wishlistIds.length}
+            onOpenCart={() => setIsCartOpen(true)}
+            onOpenWishlist={() => setIsWishlistOpen(true)}
+            onOpenAuth={() => setIsAuthOpen(true)}
+            onOpenUserProfile={() => setIsUserProfileOpen(true)}
+            currentUser={currentUser}
+            onSignOut={handleBuyerSignOut}
+            onOpenAdminPanel={() => setIsAdminPanelOpen(true)}
+          />
 
-        {/* 2. Category Scroller: Horizontal pill scroller */}
-        <CategoryScroller
-          selectedCategory={selectedCategory}
-          onSelectCategory={(catId) => {
-            setSelectedCategory(catId);
-            const el = document.getElementById('full-catalog');
-            if (el) el.scrollIntoView({ behavior: 'smooth' });
-          }}
-        />
+          <main className="flex-1">
+            
+            {/* Hero Banner */}
+            <HeroBanner
+              slides={heroSlides}
+              products={products}
+              onSelectProduct={setSelectedProduct}
+              onShopNow={(cat) => {
+                if (cat) setSelectedCategory(cat);
+                const el = document.getElementById('full-catalog');
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }}
+            />
 
-        {/* 3. Horizontal Scroller Product List: Trending Wholesale Drops */}
-        {trendingProducts.length > 0 && (
-          <HorizontalProductScroller
-            title="Trending Wholesale Drops"
-            subtitle="Fast-moving retail lots ready for immediate container dispatch"
-            badge="High Demand"
-            products={trendingProducts}
-            wishlistIds={wishlistIds}
-            onToggleWishlist={handleToggleWishlist}
-            onSelectProduct={setSelectedProduct}
-            onQuickAdd={handleQuickAdd}
-            onViewAll={() => {
-              setSelectedCategory('all');
-              const el = document.getElementById('full-catalog');
-              if (el) el.scrollIntoView({ behavior: 'smooth' });
+            {/* Dynamic Category Scroller */}
+            <CategoryScroller
+              categories={categories}
+              selectedCategory={selectedCategory}
+              onSelectCategory={(catId) => {
+                setSelectedCategory(catId);
+                const el = document.getElementById('full-catalog');
+                if (el) el.scrollIntoView({ behavior: 'smooth' });
+              }}
+            />
+
+            {/* Horizontal Scroller: Configured for 'horizontal' or 'both' placement */}
+            {horizontalProducts.length > 0 && (
+              <HorizontalProductScroller
+                title="Trending Wholesale Drops"
+                subtitle="Fast-moving retail lots ready for immediate transport dispatch"
+                badge="Hot Sourcing"
+                products={horizontalProducts}
+                wishlistIds={wishlistIds}
+                onToggleWishlist={handleToggleWishlist}
+                onSelectProduct={setSelectedProduct}
+                onQuickAdd={handleQuickAdd}
+                onViewAll={() => {
+                  setSelectedCategory('all');
+                  const el = document.getElementById('full-catalog');
+                  if (el) el.scrollIntoView({ behavior: 'smooth' });
+                }}
+              />
+            )}
+
+            {/* Vertical Catalog Grid: Configured for 'vertical' or 'both' placement */}
+            <ProductGrid
+              products={verticalProducts}
+              wishlistIds={wishlistIds}
+              onToggleWishlist={handleToggleWishlist}
+              onSelectProduct={setSelectedProduct}
+              onQuickAdd={handleQuickAdd}
+              selectedCategory={selectedCategory}
+              searchQuery={searchQuery}
+            />
+
+          </main>
+
+          <Footer footerInfo={footerInfo} />
+
+          {/* Mobile Bottom Bar */}
+          <MobileNav
+            cartCount={cartTotalCount}
+            wishlistCount={wishlistIds.length}
+            onOpenCart={() => setIsCartOpen(true)}
+            onOpenWishlist={() => setIsWishlistOpen(true)}
+            onOpenAuth={() => {
+              if (currentUser) {
+                setIsUserProfileOpen(true);
+              } else {
+                setIsAuthOpen(true);
+              }
             }}
+            onScrollToTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
           />
-        )}
+        </>
+      )}
 
-        {/* 4. Horizontal Scroller Product List: Heavyweight Knitwear & Fleece */}
-        {knitwearAndHoodies.length > 0 && (
-          <HorizontalProductScroller
-            title="Heavyweight Blanks & Knitwear"
-            subtitle="420–520 GSM luxury streetwear blanks ready for custom branding"
-            badge="Factory Lot"
-            products={knitwearAndHoodies}
-            wishlistIds={wishlistIds}
-            onToggleWishlist={handleToggleWishlist}
-            onSelectProduct={setSelectedProduct}
-            onQuickAdd={handleQuickAdd}
-          />
-        )}
+      {/* Drawers & Modals */}
+      {/* Wholesale Bag / Cart Drawer */}
+      {isCartOpen && (
+        <CartDrawer
+          isOpen={isCartOpen}
+          onClose={() => setIsCartOpen(false)}
+          items={cartItems}
+          onUpdateQuantity={handleUpdateCartQuantity}
+          onRemoveItem={handleRemoveCartItem}
+          onClearCart={handleClearCart}
+          currentUser={currentUser}
+        />
+      )}
 
-        {/* 5. Vertical Product List: Full Wholesale Catalog with Search, Category Filter, and Sorting */}
-        <ProductGrid
+      {/* Wishlist Drawer */}
+      {isWishlistOpen && (
+        <WishlistDrawer
+          isOpen={isWishlistOpen}
+          onClose={() => setIsWishlistOpen(false)}
           products={products}
           wishlistIds={wishlistIds}
           onToggleWishlist={handleToggleWishlist}
           onSelectProduct={setSelectedProduct}
           onQuickAdd={handleQuickAdd}
-          selectedCategory={selectedCategory}
-          searchQuery={searchQuery}
         />
+      )}
 
-      </main>
+      {/* Trader Sign In / Register Modal */}
+      {isAuthOpen && (
+        <AuthModal
+          isOpen={isAuthOpen}
+          onClose={() => setIsAuthOpen(false)}
+          onLoginSuccess={handleBuyerLoginSuccess}
+        />
+      )}
 
-      {/* Footer */}
-      <Footer
-        onOpenAdmin={() => setIsAdminPanelOpen(true)}
-        isAdminLoggedIn={isAdminLoggedIn}
-      />
+      {/* User Profile & Live Order Tracking Full-Page View */}
+      {isUserProfileOpen && currentUser && (
+        <UserProfileModal
+          isOpen={isUserProfileOpen}
+          onClose={() => setIsUserProfileOpen(false)}
+          currentUser={currentUser}
+          onSignOut={handleBuyerSignOut}
+          onOpenAdmin={() => {
+            setIsUserProfileOpen(false);
+            setIsAdminPanelOpen(true);
+          }}
+        />
+      )}
 
-      {/* Mobile Bottom Fixed Nav Bar (Phone Friendly) */}
-      <MobileNav
-        cartCount={cartTotalCount}
-        wishlistCount={wishlistIds.length}
-        onOpenCart={() => setIsCartOpen(true)}
-        onOpenWishlist={() => setIsWishlistOpen(true)}
-        onOpenAuth={() => setIsAuthOpen(true)}
-        onScrollToTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-      />
-
-      {/* Modals & Drawers */}
-      {/* Product Detail Modal */}
-      <ProductDetailModal
-        product={selectedProduct}
-        onClose={() => setSelectedProduct(null)}
-        isWishlisted={selectedProduct ? wishlistIds.includes(selectedProduct.id) : false}
-        onToggleWishlist={handleToggleWishlist}
-        onAddToCart={handleAddToCart}
-        onDirectOrderNow={handleDirectOrderNow}
-      />
-
-      {/* Cart & Wholesale Checkout Drawer */}
-      <CartDrawer
-        isOpen={isCartOpen}
-        onClose={() => setIsCartOpen(false)}
-        items={cartItems}
-        onUpdateQuantity={handleUpdateCartQuantity}
-        onRemoveItem={handleRemoveCartItem}
-        onClearCart={handleClearCart}
-        currentUser={currentUser}
-      />
-
-      {/* Wishlist Drawer */}
-      <WishlistDrawer
-        isOpen={isWishlistOpen}
-        onClose={() => setIsWishlistOpen(false)}
-        products={products}
-        wishlistIds={wishlistIds}
-        onToggleWishlist={handleToggleWishlist}
-        onSelectProduct={setSelectedProduct}
-        onQuickAdd={handleQuickAdd}
-      />
-
-      {/* Optional B2B Buyer Login/Signup (No Admin Traces) */}
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-        onLoginSuccess={handleBuyerLoginSuccess}
-      />
-
-      {/* Hidden Admin Suite (User: admin / Pass: admin9557) */}
-      <AdminPanel
-        isOpen={isAdminPanelOpen}
-        onClose={() => setIsAdminPanelOpen(false)}
-        isAdminLoggedIn={isAdminLoggedIn}
-        onLoginSuccess={handleAdminLoginSuccess}
-        onLogout={handleAdminLogout}
-        products={products}
-        onRefreshProducts={() => {
-          // Re-subscribe or trigger refresh
-          const unsub = subscribeToProducts((live) => setProducts(live));
-          if (typeof unsub === 'function') unsub();
-        }}
-      />
+      {/* Admin Suite: ONLY visible to role === 'admin' */}
+      {isAdminPanelOpen && (
+        <AdminPanel
+          isOpen={isAdminPanelOpen}
+          onClose={() => setIsAdminPanelOpen(false)}
+          isAdminLoggedIn={isAdminLoggedIn}
+          onLoginSuccess={handleAdminLoginSuccess}
+          onLogout={handleAdminLogout}
+          products={products}
+          categories={categories}
+          footerInfo={footerInfo}
+          onFooterUpdate={setFooterInfo}
+          onRefreshProducts={() => {
+            const unsub = subscribeToProducts((live) => setProducts(live));
+            if (typeof unsub === 'function') unsub();
+          }}
+        />
+      )}
 
     </div>
   );

@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, Heart, Plus, Trash2, ArrowRight } from 'lucide-react';
 import { Product } from '../types.ts';
+import { formatPrice } from '../utils/format.ts';
 
 interface WishlistDrawerProps {
   isOpen: boolean;
@@ -87,7 +88,7 @@ export const WishlistDrawer: React.FC<WishlistDrawerProps> = ({
                         MOQ: {prod.moq} pcs • {prod.category}
                       </p>
                       <div className="text-xs font-black text-neutral-900 mt-1">
-                        ${prod.basePrice}
+                        ₹{formatPrice(prod?.basePrice)}
                         <span className="text-[10px] font-normal text-neutral-400 ml-1">/unit</span>
                       </div>
                     </div>
@@ -96,7 +97,7 @@ export const WishlistDrawer: React.FC<WishlistDrawerProps> = ({
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     <button
                       onClick={() => onQuickAdd(prod)}
-                      className="p-2 bg-neutral-900 text-white rounded-full hover:bg-black transition-colors"
+                      className="p-2 bg-red-800 text-white rounded-full hover:bg-red-900 transition-colors"
                       title="Add lot to bag"
                     >
                       <Plus className="w-4 h-4" />
@@ -122,7 +123,7 @@ export const WishlistDrawer: React.FC<WishlistDrawerProps> = ({
                 wishlistedProducts.forEach(p => onQuickAdd(p));
                 onClose();
               }}
-              className="w-full py-3 bg-neutral-900 text-white rounded-full font-bold text-xs hover:bg-black transition-all flex items-center justify-center gap-2"
+              className="w-full py-3 bg-red-800 text-white rounded-full font-bold text-xs hover:bg-red-900 transition-all flex items-center justify-center gap-2"
             >
               <span>Add All to Bulk Bag</span>
               <ArrowRight className="w-4 h-4" />

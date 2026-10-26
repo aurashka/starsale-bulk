@@ -83,7 +83,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </button>
 
         <div className="text-center mb-6">
-          <span className="text-[11px] font-mono tracking-widest uppercase px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 font-bold border border-amber-300">
+          <span className="text-[11px] font-mono tracking-widest uppercase px-2.5 py-0.5 rounded-full bg-red-50 text-red-900 font-bold border border-red-200">
             India Wholesale Trader Hub
           </span>
           <h3 className="text-2xl font-black font-heading text-neutral-900 mt-2">
@@ -219,11 +219,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </>
           )}
 
-          {/* Submit button with bold color */}
+          {/* Submit button with darkish red color */}
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3.5 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white rounded-full font-black text-sm transition-all flex items-center justify-center gap-2 mt-4 shadow-md disabled:opacity-50"
+            className="w-full py-3.5 bg-red-800 hover:bg-red-900 text-white rounded-full font-black text-sm transition-all flex items-center justify-center gap-2 mt-4 shadow-md disabled:opacity-50"
           >
             <span>{loading ? 'Processing...' : isSignUp ? 'Create Wholesale Account' : 'Sign In to Portal'}</span>
             <ArrowRight className="w-4 h-4" />

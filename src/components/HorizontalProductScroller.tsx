@@ -46,7 +46,7 @@ export const HorizontalProductScroller: React.FC<HorizontalProductScrollerProps>
           <div className="flex items-center gap-2">
             {badge && (
               <span className="px-2 py-0.5 rounded-full bg-neutral-900 text-white text-[10px] font-bold tracking-wider uppercase flex items-center gap-1">
-                <Flame className="w-3 h-3 text-amber-400" />
+                <Flame className="w-3 h-3 text-red-500" />
                 {badge}
               </span>
             )}

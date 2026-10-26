@@ -81,7 +81,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6">
         <div>
           <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-600"></span>
+            <span className="w-2.5 h-2.5 rounded-full bg-red-800"></span>
             <h2 className="text-2xl sm:text-3xl font-black text-neutral-900 font-heading tracking-tight">
               India Wholesale Catalog (₹ INR)
             </h2>
@@ -100,7 +100,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
             onClick={() => setStockOnly(!stockOnly)}
             className={`text-xs px-3.5 py-1.5 rounded-full border transition-all font-bold ${
               stockOnly
-                ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                ? 'bg-emerald-700 text-white border-emerald-700 shadow-sm'
                 : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-50'
             }`}
           >
@@ -112,7 +112,7 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-white border border-neutral-300 hover:border-neutral-400 text-neutral-800 text-xs font-bold rounded-full px-4 py-2 pr-8 appearance-none focus:outline-none focus:border-red-600 cursor-pointer shadow-2xs"
+              className="bg-white border border-neutral-300 hover:border-neutral-400 text-neutral-800 text-xs font-bold rounded-full px-4 py-2 pr-8 appearance-none focus:outline-none focus:border-red-800 cursor-pointer shadow-2xs"
             >
               <option value="featured">Sort: Featured Drops</option>
               <option value="price-asc">Rate: Low to High (₹)</option>
