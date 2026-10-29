@@ -27,9 +27,19 @@ import {
   Sparkles,
   SlidersHorizontal,
   ArrowUpDown,
-  ExternalLink
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  Users,
+  Search,
+  Clock,
+  UserCheck,
+  QrCode,
+  AlertCircle,
+  Upload,
+  Copy
 } from 'lucide-react';
-import { Product, WholesaleOrder, BulkTier, CategoryItem, ProductSpecCard, CompanyFooterInfo, HeroSlide } from '../types.ts';
+import { Product, WholesaleOrder, BulkTier, CategoryItem, ProductSpecCard, CompanyFooterInfo, HeroSlide, PaymentSettings } from '../types.ts';
 import { 
   saveProduct, 
   deleteProductById, 
@@ -39,6 +49,9 @@ import {
   saveCategory,
   deleteCategoryById,
   updateOrderStatus,
+  deleteOrderById,
+  purgeCorruptOrders,
+  isValidRealOrder,
   saveFooterInfo,
   getLocalFooterInfo,
   subscribeToHeroSlides,
@@ -47,9 +60,15 @@ import {
   updateHeroSlideSequences,
   seedInitialHeroSlides,
   updateProductPlacements,
-  getLocalHeroSlides
+  getLocalHeroSlides,
+  getLocalPaymentSettings,
+  savePaymentSettings,
+  subscribeToPaymentSettings,
+  acceptOrderPayment,
+  rejectOrderPayment,
+  updateOrderTracking
 } from '../services/dataService.ts';
-import { SAMPLE_IMAGE_PRESETS, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES } from '../data/defaultProducts.ts';
+import { SAMPLE_IMAGE_PRESETS, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES, DEFAULT_PAYMENT_SETTINGS } from '../data/defaultProducts.ts';
 import { formatPrice, formatDate } from '../utils/format.ts';
 
 interface AdminPanelProps {
@@ -81,9 +100,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // Tabs: 'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'footer'
-  const [activeTab, setActiveTab] = useState<'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'footer'>('products');
+  // Tabs: 'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'payment' | 'footer'
+  const [activeTab, setActiveTab] = useState<'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'payment' | 'footer'>('products');
   const [orders, setOrders] = useState<WholesaleOrder[]>([]);
+
+  // Payment Gateway & Freight Charge Settings State
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getLocalPaymentSettings());
+  const [isSavingPaymentSettings, setIsSavingPaymentSettings] = useState(false);
+  const [copiedAdminUpi, setCopiedAdminUpi] = useState(false);
+  const qrFileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Hero Banner Slides State
   const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(() => getLocalHeroSlides());
@@ -114,10 +139,27 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // Custom in-UI Delete Confirmation (Reliable in iframes without window.confirm)
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
     isOpen: boolean;
-    type: 'product' | 'category' | 'heroSlide';
+    type: 'product' | 'category' | 'heroSlide' | 'order';
     id: string;
     name: string;
+    extraId?: string;
   } | null>(null);
+
+  // Transport Orders State: User-Wise grouping, compact accordion rows, real orders filtering
+  const [orderViewMode, setOrderViewMode] = useState<'user_wise' | 'all_latest'>('user_wise');
+  const [expandedOrderIds, setExpandedOrderIds] = useState<string[]>([]);
+  const [expandedBuyerKeys, setExpandedBuyerKeys] = useState<string[]>([]);
+  const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  const [orderStatusFilter, setOrderStatusFilter] = useState('all');
+  const [isPurgingOrders, setIsPurgingOrders] = useState(false);
+  const [savingOrderId, setSavingOrderId] = useState<string | null>(null);
+  const [orderEditDrafts, setOrderEditDrafts] = useState<Record<string, {
+    status?: WholesaleOrder['status'];
+    bilti?: string;
+    note?: string;
+    carrier?: string;
+    paymentNote?: string;
+  }>>({});
 
   // Form State in ₹ INR
   const [formName, setFormName] = useState('');
@@ -170,6 +212,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     });
     return () => {
       if (typeof unsubHero === 'function') unsubHero();
+    };
+  }, []);
+
+  // Subscribe to Payment Settings
+  useEffect(() => {
+    const unsubPay = subscribeToPaymentSettings((settings) => {
+      setPaymentSettings(settings);
+    });
+    return () => {
+      if (typeof unsubPay === 'function') unsubPay();
     };
   }, []);
 
@@ -535,6 +587,78 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setStatusMessage('Error saving company profile to Firebase.');
     } finally {
       setIsSavingFooter(false);
+    }
+  };
+
+  const handleQrFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setStatusMessage('Please select a valid image file (PNG, JPG, or WEBP).');
+      setTimeout(() => setStatusMessage(null), 3500);
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      setStatusMessage('Scanner QR image should be under 2MB.');
+      setTimeout(() => setStatusMessage(null), 3500);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result as string;
+      if (result) {
+        setPaymentSettings(prev => ({
+          ...prev,
+          qrCodeUrl: result
+        }));
+        setStatusMessage('Custom QR code scanner image uploaded! Click "Save Settings" to save to Firebase.');
+        setTimeout(() => setStatusMessage(null), 3500);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleGenerateDynamicQr = () => {
+    const upi = paymentSettings.upiId.trim();
+    if (!upi) {
+      setStatusMessage('Please enter a valid UPI ID (e.g. stardot.b2b@okhdfcbank) first.');
+      setTimeout(() => setStatusMessage(null), 3500);
+      return;
+    }
+    const name = paymentSettings.upiName.trim() || 'Stardot Wholesale India';
+    const dynamicQr = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`upi://pay?pa=${upi}&pn=${encodeURIComponent(name)}&cu=INR`)}`;
+    setPaymentSettings(prev => ({
+      ...prev,
+      qrCodeUrl: dynamicQr
+    }));
+    setStatusMessage('Generated dynamic QR Code from UPI ID! Click "Save Settings" to apply.');
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleResetQrToDefault = () => {
+    setPaymentSettings(prev => ({
+      ...prev,
+      qrCodeUrl: DEFAULT_PAYMENT_SETTINGS.qrCodeUrl
+    }));
+    setStatusMessage('QR Code reset to default scanner.');
+    setTimeout(() => setStatusMessage(null), 3500);
+  };
+
+  const handleSavePaymentSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingPaymentSettings(true);
+    try {
+      await savePaymentSettings(paymentSettings);
+      setStatusMessage('UPI Payment Gateway & Delivery charge setup saved to Firebase!');
+      setTimeout(() => setStatusMessage(null), 3500);
+    } catch (err) {
+      console.error('Payment settings save error:', err);
+      setStatusMessage('Error saving payment setup to Firebase.');
+    } finally {
+      setIsSavingPaymentSettings(false);
     }
   };
 
@@ -1747,6 +1871,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('payment')}
+              className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2 ${
+                activeTab === 'payment'
+                  ? 'bg-red-800 text-white shadow-xs'
+                  : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+              }`}
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>UPI & Freight Setup</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('footer')}
               className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2 ${
                 activeTab === 'footer'
@@ -1776,6 +1912,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               >
                 <Plus className="w-4 h-4" />
                 <span>+ Add New Style</span>
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'payment' && (
+            <div className="flex items-center gap-2 ml-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  setPaymentSettings(DEFAULT_PAYMENT_SETTINGS);
+                  setStatusMessage('Reset to default UPI settings. Click Save to persist.');
+                  setTimeout(() => setStatusMessage(null), 3500);
+                }}
+                className="px-3.5 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors border border-neutral-200"
+                title="Restore default UPI and freight settings"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Reset Defaults</span>
               </button>
             </div>
           )}
@@ -2628,145 +2782,408 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         )}
 
         {/* TAB 3: TRANSPORT ORDERS & BILTI TRACKING */}
-        {activeTab === 'orders' && (
-          <div className="space-y-6">
-            <div className="bg-white p-5 rounded-2xl border border-neutral-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-black font-heading text-neutral-900">
-                  Wholesale Cargo & Transport Orders
-                </h3>
-                <p className="text-xs text-neutral-500 mt-0.5">
-                  Live buyer bookings from across India with live 4-step dispatch status and Bilti LR tracking.
-                </p>
-              </div>
-              <span className="text-xs font-mono font-bold text-neutral-600 bg-neutral-100 px-3 py-1.5 rounded-xl border border-neutral-200">
-                {orders.length} Active Bookings
-              </span>
-            </div>
+        {activeTab === 'orders' && (() => {
+          // 1. Filter out empty, corrupt, or deleted demo orders
+          const realOrders = orders
+            .filter(isValidRealOrder)
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
-            {orders.length === 0 ? (
-              <div className="py-20 text-center space-y-3 bg-white rounded-2xl border border-neutral-200 shadow-xs">
-                <Truck className="w-14 h-14 text-neutral-300 mx-auto" />
-                <h4 className="font-bold text-neutral-800 text-sm">No wholesale orders booked yet</h4>
-                <p className="text-xs text-neutral-500 max-w-sm mx-auto">
-                  Orders placed by registered wholesale buyers will appear here in real-time from Firebase.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-5">
-                {orders.map((ord, ordIdx) => (
-                  <div key={ord.id || `ord-${ordIdx}`} className="bg-white border border-neutral-200 rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-neutral-100 pb-4">
-                      <div>
-                        <div className="flex items-center gap-2.5">
-                          <span className="font-mono font-black text-red-800 text-sm sm:text-base">{ord.orderNumber}</span>
-                          <span className={`px-3 py-0.5 rounded-full text-[10px] font-black uppercase border ${
-                            ord.status === 'Rejected'
-                              ? 'bg-red-50 text-red-900 border-red-300'
-                              : ord.status === 'Delivery Attempted'
-                              ? 'bg-amber-50 text-amber-900 border-amber-300'
-                              : ord.status === 'Delivered'
-                              ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                              : ord.status === 'Dispatched'
-                              ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
-                              : ord.status === 'Confirmed'
-                              ? 'bg-blue-50 text-blue-800 border-blue-200'
-                              : 'bg-neutral-100 text-neutral-800 border-neutral-300'
-                          }`}>
-                            {ord.status}
+          // 2. Search & Status filter
+          const filteredOrders = realOrders.filter(ord => {
+            const q = orderSearchQuery.toLowerCase().trim();
+            const matchQuery = !q || 
+              (ord.orderNumber && ord.orderNumber.toLowerCase().includes(q)) ||
+              (ord.customerName && ord.customerName.toLowerCase().includes(q)) ||
+              (ord.companyName && ord.companyName.toLowerCase().includes(q)) ||
+              (ord.phone && ord.phone.includes(q)) ||
+              (ord.city && ord.city.toLowerCase().includes(q)) ||
+              (ord.trackingBiltiNumber && ord.trackingBiltiNumber.toLowerCase().includes(q)) ||
+              (ord.trackingTicketId && ord.trackingTicketId.toLowerCase().includes(q));
+
+            const matchStatus = orderStatusFilter === 'all' || ord.status === orderStatusFilter;
+            return matchQuery && matchStatus;
+          });
+
+          // 3. User-Wise Grouping
+          interface BuyerGroup {
+            key: string;
+            userId: string;
+            customerName: string;
+            companyName: string;
+            phone: string;
+            email: string;
+            city: string;
+            orders: WholesaleOrder[];
+            totalSpent: number;
+            totalPieces: number;
+            latestOrderDate: number;
+          }
+
+          const buyerGroups: BuyerGroup[] = [];
+          const buyerMap = new Map<string, BuyerGroup>();
+
+          filteredOrders.forEach(ord => {
+            const cleanPhone10 = (ord.phone || '').replace(/\D/g, '').slice(-10);
+            const resolvedUid = ord.userId || (cleanPhone10 ? `usr_${cleanPhone10}` : 'usr_guest');
+            const key = resolvedUid;
+
+            if (!buyerMap.has(key)) {
+              const newGroup: BuyerGroup = {
+                key,
+                userId: resolvedUid,
+                customerName: ord.customerName || 'Direct Buyer',
+                companyName: ord.companyName || 'Retail Store',
+                phone: ord.phone || '',
+                email: ord.email || '',
+                city: ord.city || '',
+                orders: [],
+                totalSpent: 0,
+                totalPieces: 0,
+                latestOrderDate: ord.createdAt || 0
+              };
+              buyerMap.set(key, newGroup);
+              buyerGroups.push(newGroup);
+            }
+
+            const g = buyerMap.get(key)!;
+            g.orders.push(ord);
+            g.totalSpent += (ord.totalAmount || 0);
+            g.totalPieces += (ord.totalQuantity || 0);
+            if ((ord.createdAt || 0) > g.latestOrderDate) {
+              g.latestOrderDate = ord.createdAt || 0;
+            }
+          });
+
+          // Sort buyer groups by their latest order date (newest buyer at top)
+          buyerGroups.sort((a, b) => b.latestOrderDate - a.latestOrderDate);
+
+          // Within each group, sort orders strictly latest top
+          buyerGroups.forEach(g => {
+            g.orders.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          });
+
+          const toggleOrderExpand = (orderId: string) => {
+            setExpandedOrderIds(prev => 
+              prev.includes(orderId) ? prev.filter(id => id !== orderId) : [...prev, orderId]
+            );
+          };
+
+          const toggleBuyerExpand = (key: string) => {
+            setExpandedBuyerKeys(prev => 
+              prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+            );
+          };
+
+          const handlePurgeOrders = async () => {
+            setIsPurgingOrders(true);
+            try {
+              const purged = await purgeCorruptOrders();
+              setStatusMessage(purged > 0 ? `Cleaned ${purged} corrupt/empty orders.` : 'No empty or corrupt orders found.');
+              setTimeout(() => setStatusMessage(null), 3500);
+            } catch (err) {
+              console.error(err);
+              setStatusMessage('Error purging corrupt orders.');
+            } finally {
+              setIsPurgingOrders(false);
+            }
+          };
+
+          const getDraft = (ord: WholesaleOrder) => {
+            return orderEditDrafts[ord.id] || {
+              status: ord.status || 'Pending Review',
+              bilti: ord.trackingBiltiNumber || '',
+              note: ord.statusNote || '',
+              carrier: ord.trackingCarrier || ''
+            };
+          };
+
+          const updateDraft = (ordId: string, patch: Partial<{ status: WholesaleOrder['status']; bilti: string; note: string; carrier: string }>) => {
+            setOrderEditDrafts(prev => ({
+              ...prev,
+              [ordId]: {
+                ...(prev[ordId] || {}),
+                ...patch
+              }
+            }));
+          };
+
+          const handleSaveOrderStatus = async (ord: WholesaleOrder) => {
+            const draft = getDraft(ord);
+            const newStatus = draft.status || ord.status || 'Pending Review';
+            const biltiVal = draft.bilti !== undefined ? draft.bilti.trim() : (ord.trackingBiltiNumber || '');
+            const noteVal = draft.note !== undefined ? draft.note.trim() : (ord.statusNote || '');
+
+            let step = 1;
+            if (newStatus === 'Pending Review' || newStatus === 'Payment Verification') step = 1;
+            else if (newStatus === 'Confirmed') step = 2;
+            else if (newStatus === 'Dispatched') step = 3;
+            else if (newStatus === 'Out for Delivery') step = 4;
+            else if (newStatus === 'Delivered') step = 5;
+            else if (newStatus === 'Delivery Attempted') step = 6;
+            else if (newStatus === 'Rejected') step = 0;
+
+            const carrierVal = draft.carrier !== undefined ? draft.carrier.trim() : (ord.trackingCarrier || '');
+
+            setSavingOrderId(ord.id);
+            try {
+              await updateOrderStatus(ord.id, newStatus, step, biltiVal, noteVal, ord.userId, carrierVal);
+              setOrders(prev => prev.map(o => o.id === ord.id ? {
+                ...o,
+                status: newStatus,
+                trackingStep: step,
+                trackingBiltiNumber: biltiVal,
+                statusNote: noteVal,
+                updatedAt: Date.now()
+              } : o));
+              setStatusMessage(`Order ${ord.orderNumber} updated in-place to "${newStatus}"!`);
+              setTimeout(() => setStatusMessage(null), 3500);
+            } catch (err) {
+              console.error(err);
+              setStatusMessage('Error saving order updates.');
+            } finally {
+              setSavingOrderId(null);
+            }
+          };
+
+          // Render a single compact order row (expandable)
+          const renderCompactOrderRow = (ord: WholesaleOrder) => {
+            const isExpanded = expandedOrderIds.includes(ord.id);
+            const draft = getDraft(ord);
+            const isSavingThis = savingOrderId === ord.id;
+
+            return (
+              <div 
+                key={ord.id} 
+                className={`bg-white border rounded-2xl transition-all overflow-hidden ${
+                  isExpanded ? 'border-red-300 ring-2 ring-red-100 shadow-md' : 'border-neutral-200 hover:border-neutral-300 shadow-xs'
+                }`}
+              >
+                {/* Compact Row Header Bar - Click to Expand */}
+                <div 
+                  onClick={() => toggleOrderExpand(ord.id)}
+                  className="p-3.5 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 cursor-pointer hover:bg-neutral-50/70 transition-colors select-none"
+                >
+                  {/* Left: Chevron + Order # + Date/Time + Buyer Name */}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <button 
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleOrderExpand(ord.id);
+                      }}
+                      className="w-7 h-7 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-600 flex items-center justify-center flex-shrink-0 transition-transform"
+                      aria-label={isExpanded ? 'Collapse' : 'Expand'}
+                    >
+                      {isExpanded ? <ChevronUp className="w-4 h-4 text-red-800" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-black text-xs text-emerald-900 bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-300 flex items-center gap-1">
+                          <Tag className="w-3 h-3 text-emerald-700" />
+                          <span>Ticket #{ord.trackingTicketId || `TRK-${(ord.orderNumber || '').replace(/[^0-9]/g, '')}`}</span>
+                        </span>
+                        <span className="font-mono font-black text-xs sm:text-sm text-red-900 bg-red-50 px-2.5 py-0.5 rounded-lg border border-red-200">
+                          {ord.orderNumber}
+                        </span>
+                        
+                        <div className="flex items-center gap-1.5 text-xs text-neutral-500 font-mono">
+                          <Clock className="w-3.5 h-3.5 text-neutral-400" />
+                          <span>{formatDate(ord.createdAt)}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                        <span className="font-black text-neutral-900">
+                          {ord.customerName || 'Valued Buyer'}
+                        </span>
+                        {ord.companyName && ord.companyName !== ord.customerName && (
+                          <span className="text-neutral-500 truncate max-w-[180px]">
+                            • {ord.companyName}
                           </span>
-                        </div>
-                        <div className="text-xs text-neutral-500 mt-1">
-                          Booked {formatDate(ord?.createdAt)} by <strong className="text-neutral-900">{ord?.companyName || 'Buyer'}</strong> ({ord?.customerName || 'Customer'})
-                        </div>
+                        )}
+                        {ord.phone && (
+                          <a 
+                            href={`tel:${ord.phone}`} 
+                            onClick={(e) => e.stopPropagation()}
+                            className="font-mono text-neutral-600 hover:text-red-700 bg-neutral-100 px-2 py-0.5 rounded-md text-[11px]"
+                          >
+                            📞 {ord.phone}
+                          </a>
+                        )}
+                        {ord.city && (
+                          <span className="text-neutral-500 text-[11px]">
+                            📍 {ord.city}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Right: Quantity + Amount + Status Badge + Quick Delete */}
+                  <div className="flex items-center justify-between md:justify-end gap-3 pt-2 md:pt-0 border-t md:border-t-0 border-neutral-100 flex-shrink-0">
+                    <div className="text-left md:text-right">
+                      <div className="text-sm sm:text-base font-black text-neutral-900 font-heading">
+                        ₹{formatPrice(ord.totalAmount)}
+                      </div>
+                      <span className="text-[11px] font-bold text-neutral-500 font-mono">
+                        {ord.totalQuantity ?? 0} pcs
+                      </span>
+                    </div>
+
+                    <span className={`px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                      ord.status === 'Rejected'
+                        ? 'bg-red-50 text-red-900 border-red-300'
+                        : ord.status === 'Delivery Attempted'
+                        ? 'bg-amber-50 text-amber-900 border-amber-300'
+                        : ord.status === 'Delivered'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        : ord.status === 'Dispatched'
+                        ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                        : ord.status === 'Confirmed'
+                        ? 'bg-blue-50 text-blue-800 border-blue-200'
+                        : 'bg-neutral-100 text-neutral-800 border-neutral-300'
+                    }`}>
+                      {ord.status || 'Pending Review'}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteConfirmState({
+                          isOpen: true,
+                          type: 'order',
+                          id: ord.id,
+                          name: `Order ${ord.orderNumber} (${ord.customerName})`,
+                          extraId: ord.userId
+                        });
+                      }}
+                      className="p-1.5 text-neutral-400 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Permanently delete order"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* EXPANDED INNER SYSTEM - Shown on Click */}
+                {isExpanded && (
+                  <div className="border-t border-neutral-200 bg-[#fbfbfa] p-4 sm:p-6 space-y-5 animate-in fade-in duration-150">
+                    
+                    {/* Consignment Overview Banner */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-white p-4 rounded-xl border border-neutral-200 shadow-xs">
+                      <div className="space-y-0.5">
+                        <span className="text-neutral-400 block text-[11px] uppercase font-bold tracking-wider">Buyer & Contact:</span>
+                        <div className="font-bold text-neutral-900">{ord.customerName} ({ord.companyName || 'B2B Retailer'})</div>
+                        <div className="text-neutral-700 font-mono">{ord.phone}</div>
+                        <div className="text-neutral-500 truncate">{ord.email}</div>
                       </div>
 
-                      <div className="text-left sm:text-right">
-                        <div className="text-xl font-black text-neutral-900 font-heading">
-                          ₹{formatPrice(ord?.totalAmount)}
-                        </div>
-                        <span className="text-xs text-neutral-500 font-semibold">{ord?.totalQuantity ?? 0} pcs consignment</span>
+                      <div className="space-y-0.5">
+                        <span className="text-neutral-400 block text-[11px] uppercase font-bold tracking-wider">Destination Godown:</span>
+                        <div className="font-bold text-neutral-900">{ord.city}, {ord.state} ({ord.pincode})</div>
+                        <div className="text-neutral-700 leading-relaxed">{ord.shippingAddress}</div>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <span className="text-neutral-400 block text-[11px] uppercase font-bold tracking-wider">Transport & GST:</span>
+                        <div className="font-bold text-neutral-800">{ord.transportPreference || 'VRL Logistics Road Freight'}</div>
+                        <div className="text-neutral-600 font-mono">GSTIN: {ord.gstin || 'Unregistered'}</div>
+                        {ord.notes && (
+                          <div className="text-[11px] text-amber-900 bg-amber-50 p-1.5 rounded-lg border border-amber-200 mt-1">
+                            Note: {ord.notes}
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs bg-neutral-50 p-4 rounded-xl border border-neutral-100">
-                      <div>
-                        <span className="text-neutral-500 block text-[11px]">Contact Desk:</span>
-                        <span className="font-bold text-neutral-900">{ord.phone}</span>
-                        <span className="text-neutral-500 block text-[11px] truncate">{ord.email}</span>
+                    {/* Consignment Lot Breakdown */}
+                    <div className="bg-white p-4 rounded-xl border border-neutral-200 shadow-xs space-y-3">
+                      <div className="flex items-center justify-between border-b border-neutral-100 pb-2">
+                        <span className="font-black text-neutral-900 text-xs">
+                          Consignment Lots ({ord.items?.length || 0} Products • {ord.totalQuantity} Units):
+                        </span>
+                        <span className="text-xs font-mono font-bold text-red-700">
+                          Total Value: ₹{formatPrice(ord.totalAmount)}
+                        </span>
                       </div>
-                      <div>
-                        <span className="text-neutral-500 block text-[11px]">Destination Godown:</span>
-                        <span className="font-bold text-neutral-900">{ord.city}, {ord.state} ({ord.pincode})</span>
-                        <span className="text-neutral-500 block text-[11px] truncate">{ord.shippingAddress}</span>
-                      </div>
-                      <div>
-                        <span className="text-neutral-500 block text-[11px]">Carrier & GST:</span>
-                        <span className="font-bold text-neutral-800">{ord.transportPreference || 'VRL Logistics Road Cargo'}</span>
-                        <span className="text-neutral-500 block font-mono text-[11px]">GST: {ord.gstin || 'Unregistered'}</span>
-                      </div>
-                    </div>
 
-                    <div className="text-xs space-y-2 pt-1">
-                      <span className="font-bold text-neutral-800">Consignment Lot Breakdown:</span>
                       <div className="divide-y divide-neutral-100">
-                        {(ord.items || []).map((it, idx) => (
-                          <div key={it.productId ? `${it.productId}-${idx}` : `it-${idx}`} className="py-2 flex items-center justify-between text-neutral-700">
-                            <div className="flex items-center gap-2.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-red-800" />
-                              <span className="font-medium">{it.productName} ({it.size} / {it.color})</span>
+                        {(ord.items || []).map((item, itIdx) => (
+                          <div key={item.productId ? `${item.productId}-${itIdx}` : `item-${itIdx}`} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                            <div className="flex items-center gap-3 min-w-0">
+                              {item.image && (
+                                <img 
+                                  src={item.image} 
+                                  alt={item.productName} 
+                                  className="w-10 h-12 object-cover rounded-lg bg-neutral-100 border border-neutral-200 flex-shrink-0"
+                                />
+                              )}
+                              <div className="min-w-0">
+                                <div className="font-bold text-neutral-900 truncate">{item.productName}</div>
+                                <div className="text-[11px] text-neutral-500 flex items-center gap-2 mt-0.5">
+                                  <span className="bg-neutral-100 px-1.5 py-0.5 rounded text-neutral-700 font-bold">{item.size}</span>
+                                  <span>•</span>
+                                  <span>{item.color}</span>
+                                </div>
+                              </div>
                             </div>
-                            <div className="font-mono text-xs">
-                              {it.quantity} pcs @ ₹{it.unitPrice} = <strong>₹{formatPrice(it?.total)}</strong>
+
+                            <div className="text-right font-mono text-xs flex-shrink-0">
+                              <span className="text-neutral-500">{item.quantity} pcs × ₹{formatPrice(item.unitPrice)} = </span>
+                              <strong className="text-neutral-900">₹{formatPrice(item.total)}</strong>
                             </div>
                           </div>
                         ))}
                       </div>
                     </div>
 
-                    {/* Current Custom Note Banner if present */}
+                    {/* Active Message Note Banner if present */}
                     {ord.statusNote && (
                       <div className={`p-3.5 rounded-xl border text-xs flex items-start gap-2.5 ${
                         ord.status === 'Rejected'
-                          ? 'bg-red-50/80 border-red-200 text-red-950'
+                          ? 'bg-red-50 border-red-200 text-red-950'
                           : ord.status === 'Delivery Attempted'
-                          ? 'bg-amber-50/80 border-amber-200 text-amber-950'
+                          ? 'bg-amber-50 border-amber-200 text-amber-950'
                           : 'bg-neutral-50 border-neutral-200 text-neutral-800'
                       }`}>
                         <FileText className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-800" />
                         <div>
-                          <span className="font-bold block">Current Message Note to Buyer:</span>
+                          <span className="font-bold block">Current Message Note Visible to Buyer:</span>
                           <span className="text-xs">{ord.statusNote}</span>
                         </div>
                       </div>
                     )}
 
-                    {/* Comprehensive Order Status, Tracing ID & Custom Note Box */}
-                    <div className="bg-neutral-50 p-4 sm:p-5 rounded-2xl border border-neutral-200 space-y-3.5 text-xs">
+                    {/* IN-PLACE Status, Tracing ID & Custom Note Controller */}
+                    <div className="bg-white p-4 sm:p-5 rounded-2xl border border-neutral-300 space-y-4 text-xs shadow-xs">
                       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 pb-2.5">
                         <span className="font-black text-neutral-900 flex items-center gap-2 text-xs sm:text-sm">
                           <Truck className="w-4 h-4 text-red-800" />
-                          <span>Dispatch Status, Tracing ID & Custom Note:</span>
+                          <span>Update Status, Tracing Bilti & Custom Message Note:</span>
                         </span>
-                        <span className="text-[11px] font-mono font-bold text-neutral-500">
-                          Current: <strong className="text-neutral-900">{ord.status}</strong>
+                        <span className="text-[11px] font-mono font-bold text-neutral-600 bg-neutral-100 px-2 py-0.5 rounded">
+                          In-place Firebase Sync (No Duplication)
                         </span>
                       </div>
 
-                      {/* Controls Row: Status Select + Tracing ID Input */}
+                      {/* Status + Bilti ID Inputs */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div className="space-y-1">
                           <label className="font-bold text-neutral-700 block text-[11px]">Consignment Status *</label>
                           <select
-                            defaultValue={ord.status || 'Pending Review'}
-                            id={`status-select-${ord.id}`}
-                            className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs font-bold bg-white focus:outline-none focus:border-red-800"
+                            value={draft.status || ord.status || 'Pending Review'}
+                            onChange={(e) => updateDraft(ord.id, { status: e.target.value as WholesaleOrder['status'] })}
+                            className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs font-bold bg-white focus:outline-none focus:border-red-800 shadow-xs"
                           >
                             <option value="Pending Review">Pending Review (Step 1)</option>
+                            <option value="Payment Verification">Payment Verification (Step 1)</option>
                             <option value="Confirmed">Confirmed & Packing (Step 2)</option>
                             <option value="Dispatched">Dispatched / Road Cargo (Step 3)</option>
-                            <option value="Delivered">Delivered to Godown (Step 4)</option>
-                            <option value="Delivery Attempted">Delivery Attempted</option>
+                            <option value="Out for Delivery">Out for Delivery to Godown (Step 4)</option>
+                            <option value="Delivered">Delivered to Godown (Step 5)</option>
+                            <option value="Delivery Attempted">Delivery Attempted (Step 6)</option>
                             <option value="Rejected">Rejected / Cancelled</option>
                           </select>
                         </div>
@@ -2775,39 +3192,39 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <label className="font-bold text-neutral-700 block text-[11px]">Tracing ID / Bilti LR No.</label>
                           <input
                             type="text"
-                            id={`bilti-input-${ord.id}`}
-                            defaultValue={ord.trackingBiltiNumber || ''}
+                            value={draft.bilti !== undefined ? draft.bilti : (ord.trackingBiltiNumber || '')}
+                            onChange={(e) => updateDraft(ord.id, { bilti: e.target.value })}
                             placeholder="e.g. VRL-BLT-9201 / DEL-AWB-88219"
-                            className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono bg-white focus:outline-none focus:border-red-800 font-bold"
+                            className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono bg-white focus:outline-none focus:border-red-800 font-bold shadow-xs"
                           />
                         </div>
                       </div>
 
-                      {/* Custom Message Note Input (Rejected / Delivery Attempt / General Note) */}
+                      {/* Custom Message Note for Buyer */}
                       <div className="space-y-1">
                         <label className="font-bold text-neutral-700 flex items-center justify-between text-[11px]">
                           <span>Custom Message Note for Buyer (e.g. Rejection reason, Delivery attempt note, Dispatch update)</span>
-                          <span className="text-neutral-400 font-normal">Synced to Firebase</span>
+                          <span className="text-neutral-400 font-normal">Shows in buyer profile</span>
                         </label>
                         <input
                           type="text"
-                          id={`note-input-${ord.id}`}
-                          defaultValue={ord.statusNote || ''}
-                          placeholder="Type custom note (e.g. 'Delivery attempted on 26 Oct: Godown closed, will re-attempt' or 'Rejected: Pincode unserviceable')"
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs bg-white focus:outline-none focus:border-red-800 font-medium"
+                          value={draft.note !== undefined ? draft.note : (ord.statusNote || '')}
+                          onChange={(e) => updateDraft(ord.id, { note: e.target.value })}
+                          placeholder="Type custom note for buyer..."
+                          className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs bg-white focus:outline-none focus:border-red-800 font-medium shadow-xs"
                         />
                       </div>
 
-                      {/* Action Buttons Row */}
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-200">
-                        <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Quick Presets + Save In-Place Action */}
+                      <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-neutral-200">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <button
                             type="button"
                             onClick={() => {
-                              const statusSelect = document.getElementById(`status-select-${ord.id}`) as HTMLSelectElement;
-                              const noteInput = document.getElementById(`note-input-${ord.id}`) as HTMLInputElement;
-                              if (statusSelect) statusSelect.value = 'Delivery Attempted';
-                              if (noteInput && !noteInput.value) noteInput.value = 'Delivery attempted: Destination godown was unreachable/closed. Re-attempt scheduled.';
+                              updateDraft(ord.id, {
+                                status: 'Delivery Attempted',
+                                note: 'Delivery attempted: Destination godown was unreachable/closed. Re-attempt scheduled.'
+                              });
                             }}
                             className="px-2.5 py-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 text-[11px] font-bold transition-all"
                           >
@@ -2817,10 +3234,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              const statusSelect = document.getElementById(`status-select-${ord.id}`) as HTMLSelectElement;
-                              const noteInput = document.getElementById(`note-input-${ord.id}`) as HTMLInputElement;
-                              if (statusSelect) statusSelect.value = 'Rejected';
-                              if (noteInput && !noteInput.value) noteInput.value = 'Consignment rejected: Address unverified or stock shortage at mill.';
+                              updateDraft(ord.id, {
+                                status: 'Rejected',
+                                note: 'Consignment rejected: Address unverified or stock shortage at mill.'
+                              });
                             }}
                             className="px-2.5 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-900 border border-red-300 text-[11px] font-bold transition-all"
                           >
@@ -2830,51 +3247,269 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              const statusSelect = document.getElementById(`status-select-${ord.id}`) as HTMLSelectElement;
-                              if (statusSelect) statusSelect.value = 'Dispatched';
+                              updateDraft(ord.id, {
+                                status: 'Dispatched',
+                                note: 'Goods handed over to transport carrier. Bilti generated.'
+                              });
                             }}
                             className="px-2.5 py-1.5 rounded-lg bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-[11px] font-bold transition-all"
                           >
                             + Mark Dispatched
                           </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateDraft(ord.id, {
+                                status: 'Out for Delivery',
+                                note: 'Parcel arrived at local godown. Out for delivery to buyer shop.'
+                              });
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300 text-[11px] font-bold transition-all"
+                          >
+                            + Out for Delivery
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              updateDraft(ord.id, {
+                                status: 'Delivered',
+                                note: 'Parcel safely delivered and handed over at buyer shop/godown.'
+                              });
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 text-[11px] font-bold transition-all"
+                          >
+                            + Mark Delivered
+                          </button>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            const statusSelect = document.getElementById(`status-select-${ord.id}`) as HTMLSelectElement;
-                            const biltiInput = document.getElementById(`bilti-input-${ord.id}`) as HTMLInputElement;
-                            const noteInput = document.getElementById(`note-input-${ord.id}`) as HTMLInputElement;
-                            
-                            const newStatus = (statusSelect?.value || ord.status || 'Pending Review') as WholesaleOrder['status'];
-                            const biltiVal = biltiInput?.value?.trim() || '';
-                            const noteVal = noteInput?.value?.trim() || '';
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteConfirmState({
+                                isOpen: true,
+                                type: 'order',
+                                id: ord.id,
+                                name: `Order ${ord.orderNumber}`,
+                                extraId: ord.userId
+                              });
+                            }}
+                            className="px-3.5 py-2.5 rounded-xl border border-neutral-300 hover:border-red-600 text-neutral-600 hover:text-red-700 text-xs font-bold transition-colors"
+                          >
+                            Delete
+                          </button>
 
-                            let step = 1;
-                            if (newStatus === 'Pending Review') step = 1;
-                            else if (newStatus === 'Confirmed') step = 2;
-                            else if (newStatus === 'Dispatched') step = 3;
-                            else if (newStatus === 'Delivered') step = 4;
-                            else if (newStatus === 'Delivery Attempted') step = 5;
-                            else if (newStatus === 'Rejected') step = 0;
-
-                            await updateOrderStatus(ord.id, newStatus, step, biltiVal, noteVal, ord.userId);
-                            setStatusMessage(`Order ${ord.orderNumber} updated to ${newStatus} with Firebase sync!`);
-                            setTimeout(() => setStatusMessage(null), 3500);
-                          }}
-                          className="px-5 py-2.5 bg-red-800 hover:bg-red-900 text-white rounded-xl text-xs font-black transition-all shadow-xs flex items-center gap-1.5"
-                        >
-                          <Save className="w-3.5 h-3.5" />
-                          <span>Save & Sync to Firebase</span>
-                        </button>
+                          <button
+                            type="button"
+                            disabled={isSavingThis}
+                            onClick={() => handleSaveOrderStatus(ord)}
+                            className="px-5 py-2.5 bg-red-800 hover:bg-red-900 text-white rounded-xl text-xs font-black transition-all shadow-md flex items-center gap-2 disabled:opacity-50 active:scale-95"
+                          >
+                            <Save className="w-3.5 h-3.5" />
+                            <span>{isSavingThis ? 'Saving in-place...' : 'Save & Sync to Firebase'}</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
+
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
-        )}
+            );
+          };
+
+          return (
+            <div className="space-y-6 max-w-6xl mx-auto">
+              {/* Toolbar & Header */}
+              <div className="bg-white p-5 rounded-2xl border border-neutral-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                  <h3 className="text-base font-black font-heading text-neutral-900 flex items-center gap-2">
+                    <Truck className="w-5 h-5 text-red-800" />
+                    <span>Transport Cargo & Wholesale Orders</span>
+                  </h3>
+                  <p className="text-xs text-neutral-500 mt-0.5">
+                    Real orders organized user-wise with latest orders at top. Click any order row to expand details, update status or tracking.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Purge Ghost/Corrupt Orders Button */}
+                  <button
+                    type="button"
+                    disabled={isPurgingOrders}
+                    onClick={handlePurgeOrders}
+                    className="px-3 py-1.5 rounded-xl border border-neutral-300 hover:border-red-600 text-neutral-600 hover:text-red-700 text-xs font-bold transition-colors flex items-center gap-1.5"
+                    title="Clean corrupted, empty, or ghost orders"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isPurgingOrders ? 'animate-spin' : ''}`} />
+                    <span>{isPurgingOrders ? 'Cleaning...' : 'Clean Empty/Ghost Orders'}</span>
+                  </button>
+
+                  <span className="text-xs font-mono font-bold text-neutral-700 bg-neutral-100 px-3 py-1.5 rounded-xl border border-neutral-200">
+                    {realOrders.length} Real Orders ({buyerGroups.length} Buyers)
+                  </span>
+                </div>
+              </div>
+
+              {/* View Switcher & Search Bar */}
+              <div className="bg-white p-4 rounded-2xl border border-neutral-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                
+                {/* View Switcher: User-Wise vs All Orders */}
+                <div className="flex items-center gap-1.5 bg-neutral-100 p-1 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setOrderViewMode('user_wise')}
+                    className={`px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                      orderViewMode === 'user_wise'
+                        ? 'bg-white text-red-900 shadow-xs font-black'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    <span>User-Wise (Buyer Grouped)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setOrderViewMode('all_latest')}
+                    className={`px-3.5 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-all ${
+                      orderViewMode === 'all_latest'
+                        ? 'bg-white text-red-900 shadow-xs font-black'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    <ListOrdered className="w-3.5 h-3.5" />
+                    <span>All Orders (Latest Top)</span>
+                  </button>
+                </div>
+
+                {/* Search & Filter */}
+                <div className="flex items-center gap-2 flex-1 sm:max-w-md justify-end">
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={orderSearchQuery}
+                      onChange={(e) => setOrderSearchQuery(e.target.value)}
+                      placeholder="Search buyer, phone, order #, city..."
+                      className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-neutral-300 focus:outline-none focus:border-red-800 text-xs"
+                    />
+                  </div>
+
+                  <select
+                    value={orderStatusFilter}
+                    onChange={(e) => setOrderStatusFilter(e.target.value)}
+                    className="px-2.5 py-1.5 rounded-xl border border-neutral-300 bg-white text-xs font-bold focus:outline-none focus:border-red-800"
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="Payment Verification">Payment Verification (Pending)</option>
+                    <option value="Confirmed">Confirmed</option>
+                    <option value="Dispatched">Dispatched</option>
+                    <option value="Out for Delivery">Out for Delivery</option>
+                    <option value="Delivered">Delivered</option>
+                    <option value="Delivery Attempted">Delivery Attempted</option>
+                    <option value="Rejected">Rejected</option>
+                  </select>
+                </div>
+
+              </div>
+
+              {/* Order Content */}
+              {filteredOrders.length === 0 ? (
+                <div className="py-20 text-center space-y-3 bg-white rounded-2xl border border-neutral-200 shadow-xs">
+                  <Truck className="w-14 h-14 text-neutral-300 mx-auto" />
+                  <h4 className="font-bold text-neutral-800 text-sm">No real transport orders match your search</h4>
+                  <p className="text-xs text-neutral-500 max-w-sm mx-auto">
+                    New buyer bookings will automatically appear here in real-time from Firebase.
+                  </p>
+                </div>
+              ) : orderViewMode === 'user_wise' ? (
+                
+                /* VIEW MODE 1: USER-WISE GROUPED */
+                <div className="space-y-4">
+                  {buyerGroups.map((group) => {
+                    const isBuyerExpanded = !expandedBuyerKeys.includes(group.key); // Expanded by default
+
+                    return (
+                      <div 
+                        key={group.key}
+                        className="bg-white border border-neutral-200 rounded-2xl shadow-xs overflow-hidden transition-all"
+                      >
+                        {/* Buyer Header Banner */}
+                        <div 
+                          onClick={() => toggleBuyerExpand(group.key)}
+                          className="p-4 sm:p-5 bg-gradient-to-r from-[#fbfbfa] to-neutral-50 border-b border-neutral-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 cursor-pointer hover:bg-neutral-100/70 select-none"
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-red-100 text-red-900 font-black font-heading flex items-center justify-center text-sm border border-red-200 flex-shrink-0">
+                              {(group.customerName || 'U').slice(0, 1).toUpperCase()}
+                            </div>
+
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h4 className="font-black text-sm sm:text-base text-neutral-900">
+                                    {group.customerName}
+                                  </h4>
+                                  <span className="font-mono font-bold text-[10px] bg-red-100 text-red-950 px-2 py-0.5 rounded border border-red-200">
+                                    User ID: {group.userId}
+                                  </span>
+                                </div>
+                                {group.companyName && (
+                                  <span className="text-xs text-neutral-500 font-semibold">
+                                    • {group.companyName}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-neutral-500 flex flex-wrap items-center gap-2 mt-0.5">
+                                {group.phone && <span className="font-mono text-neutral-700">📞 {group.phone}</span>}
+                                {group.city && <span>• 📍 {group.city}</span>}
+                                <span>• Latest: {formatDate(group.latestOrderDate)}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-3 flex-shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-neutral-200">
+                            <div className="text-left sm:text-right">
+                              <span className="text-xs font-mono font-black text-red-900 bg-red-50 px-2 py-0.5 rounded-lg border border-red-200 block">
+                                {group.orders.length} {group.orders.length === 1 ? 'Order' : 'Orders'}
+                              </span>
+                              <span className="text-[11px] font-bold text-neutral-600 block mt-0.5 font-mono">
+                                Total ₹{formatPrice(group.totalSpent)} • {group.totalPieces} pcs
+                              </span>
+                            </div>
+
+                            <div className="w-7 h-7 rounded-lg bg-white border border-neutral-200 flex items-center justify-center text-neutral-500">
+                              {isBuyerExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Buyer's Orders (Latest on top) */}
+                        {isBuyerExpanded && (
+                          <div className="p-3 sm:p-4 bg-neutral-50/50 space-y-3">
+                            {group.orders.map(renderCompactOrderRow)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+              ) : (
+
+                /* VIEW MODE 2: FLAT ALL ORDERS (LATEST ON TOP) */
+                <div className="space-y-3">
+                  {filteredOrders.map(renderCompactOrderRow)}
+                </div>
+
+              )}
+
+            </div>
+          );
+        })()}
 
         {/* TAB 4: FOOTER & MILL PROFILE */}
         {activeTab === 'footer' && (
@@ -3060,6 +3695,419 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </form>
         )}
 
+        {/* TAB 5: UPI PAYMENT GATEWAY & FREIGHT LOGISTICS SETUP */}
+        {activeTab === 'payment' && (
+          <form onSubmit={handleSavePaymentSettings} className="space-y-6 max-w-5xl mx-auto">
+            {/* Hidden File Input for QR Image Upload */}
+            <input
+              type="file"
+              ref={qrFileInputRef}
+              onChange={handleQrFileUpload}
+              accept="image/*"
+              className="hidden"
+            />
+
+            {/* Top Header Card */}
+            <div className="bg-white p-5 rounded-2xl border border-neutral-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base font-black font-heading text-neutral-900 flex items-center gap-2">
+                  <QrCode className="w-5 h-5 text-red-800" />
+                  UPI Payment Gateway & Freight Logistics Setup
+                </h3>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Admin panel se UPI ID aur QR Code scanner ko customize karein, freight delivery fees set karein, aur Cash on Delivery (COD) advance token manage karein.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentSettings(DEFAULT_PAYMENT_SETTINGS);
+                    setStatusMessage('Settings reset to default. Click Save to persist.');
+                    setTimeout(() => setStatusMessage(null), 3500);
+                  }}
+                  className="text-xs font-bold text-neutral-600 hover:text-red-800 px-3.5 py-2 rounded-xl border border-neutral-300 hover:border-red-800 transition-colors flex items-center gap-1.5"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Reset Defaults</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Main 2-Column Section: UPI & QR Setup vs Live Customer Preview */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              
+              {/* Left Column: Form Controls (7 cols) */}
+              <div className="lg:col-span-7 space-y-6">
+                
+                {/* 1. UPI ID & Merchant Name */}
+                <div className="bg-white p-6 rounded-2xl border border-neutral-200 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                    <h4 className="text-sm font-bold text-neutral-900 flex items-center gap-2">
+                      <Tag className="w-4 h-4 text-red-800" />
+                      Merchant UPI ID & Payee Name
+                    </h4>
+                    <span className="text-[10px] bg-red-50 text-red-800 font-bold px-2 py-0.5 rounded-full border border-red-100">
+                      Live Gateway Sync
+                    </span>
+                  </div>
+
+                  <div className="space-y-3 text-xs">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-bold text-neutral-800">
+                          Merchant UPI ID / VPA <span className="text-red-800">*</span>
+                        </label>
+                        {paymentSettings.upiId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(paymentSettings.upiId);
+                              setCopiedAdminUpi(true);
+                              setTimeout(() => setCopiedAdminUpi(false), 2000);
+                            }}
+                            className="text-[11px] font-bold text-red-800 hover:text-red-900 flex items-center gap-1"
+                          >
+                            {copiedAdminUpi ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span className="text-emerald-700">Copied!</span>
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3 h-3" />
+                                <span>Test Copy</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={paymentSettings.upiId || ''}
+                        onChange={(e) => setPaymentSettings({ ...paymentSettings, upiId: e.target.value.trim() })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono font-bold focus:border-red-800 focus:outline-none"
+                        placeholder="e.g. stardot.b2b@okhdfcbank or 9876543210@paytm"
+                        required
+                      />
+                      <p className="text-[11px] text-neutral-400 mt-1">
+                        Yeh UPI ID checkout par QR code ke niche show hogi jise user copy karke kisi bhi app se pay kar sakta hai.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-neutral-800 block mb-1">
+                        Business / Payee Display Name <span className="text-red-800">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={paymentSettings.upiName || ''}
+                        onChange={(e) => setPaymentSettings({ ...paymentSettings, upiName: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-medium focus:border-red-800 focus:outline-none"
+                        placeholder="e.g. Stardot Wholesale India Pvt Ltd"
+                        required
+                      />
+                      <p className="text-[11px] text-neutral-400 mt-1">
+                        GPay / PhonePe / Paytm par account holder ka naam dikhega.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. QR Code Scanner Customization */}
+                <div className="bg-white p-6 rounded-2xl border border-neutral-200 shadow-xs space-y-4">
+                  <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                    <h4 className="text-sm font-bold text-neutral-900 flex items-center gap-2">
+                      <QrCode className="w-4 h-4 text-red-800" />
+                      QR Code Scanner Image Customization
+                    </h4>
+                    <span className="text-[10px] text-neutral-500 font-medium">
+                      PNG, JPG, or Dynamic URL
+                    </span>
+                  </div>
+
+                  <div className="space-y-4 text-xs">
+                    <p className="text-neutral-600 leading-relaxed">
+                      Aap yahan apna <strong>Custom Scanner Image (PhonePe / Google Pay standee photo / shop scanner)</strong> upload kar sakte hain, ya direct image link paste kar sakte hain, ya apne UPI ID se automatically generate kar sakte hain:
+                    </p>
+
+                    {/* Action Buttons to change QR */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <button
+                        type="button"
+                        onClick={() => qrFileInputRef.current?.click()}
+                        className="px-4 py-3 bg-red-800 hover:bg-red-900 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-xs transition-all active:scale-95"
+                      >
+                        <Upload className="w-4 h-4" />
+                        <span>Upload Scanner Photo</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleGenerateDynamicQr}
+                        className="px-4 py-3 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 border border-neutral-300 rounded-xl font-bold flex items-center justify-center gap-2 transition-all active:scale-95"
+                      >
+                        <Sparkles className="w-4 h-4 text-amber-600" />
+                        <span>Auto-Generate from UPI</span>
+                      </button>
+                    </div>
+
+                    {/* QR Code Image URL field */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="font-bold text-neutral-800">
+                          QR Code Image URL / Base64 Data
+                        </label>
+                        {paymentSettings.qrCodeUrl && (
+                          <button
+                            type="button"
+                            onClick={handleResetQrToDefault}
+                            className="text-[11px] font-bold text-neutral-500 hover:text-red-800 underline"
+                          >
+                            Reset to Default QR
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={paymentSettings.qrCodeUrl || ''}
+                        onChange={(e) => setPaymentSettings({ ...paymentSettings, qrCodeUrl: e.target.value.trim() })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 text-xs font-mono text-neutral-700 focus:border-red-800 focus:outline-none"
+                        placeholder="https://... or auto-generated URL (or upload image above)"
+                      />
+                      <p className="text-[11px] text-neutral-400 mt-1">
+                        Agar custom link ya image uploaded hai toh wahi QR code gateway par show hoga.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Right Column: Live Customer Preview Card (5 cols) */}
+              <div className="lg:col-span-5 space-y-4">
+                <div className="bg-white p-6 rounded-2xl border border-neutral-200 shadow-sm space-y-4 sticky top-24">
+                  <div className="flex items-center justify-between pb-3 border-b border-neutral-100">
+                    <span className="text-[11px] font-black uppercase tracking-wider text-neutral-500 flex items-center gap-1.5">
+                      <Eye className="w-3.5 h-3.5 text-red-800" />
+                      Live Buyer Gateway Preview
+                    </span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                      <Check className="w-2.5 h-2.5" />
+                      Active QR
+                    </span>
+                  </div>
+
+                  {/* Mock Gateway Card that looks like user view */}
+                  <div className="bg-neutral-50 p-4 sm:p-5 rounded-2xl border border-neutral-200 text-center space-y-3.5">
+                    <div className="bg-white p-3.5 rounded-xl border border-neutral-200 shadow-xs inline-block mx-auto">
+                      <img
+                        src={
+                          paymentSettings.qrCodeUrl ||
+                          `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(
+                            `upi://pay?pa=${paymentSettings.upiId || 'stardot.b2b@okhdfcbank'}&pn=${encodeURIComponent(
+                              paymentSettings.upiName || 'Stardot Wholesale India'
+                            )}&cu=INR`
+                          )}`
+                        }
+                        alt="UPI Payment QR Code"
+                        className="w-48 h-48 sm:w-52 sm:h-52 object-contain mx-auto rounded-lg"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[11px] text-neutral-500 font-semibold uppercase tracking-wider block">
+                        Merchant UPI ID / VPA
+                      </span>
+                      <div className="inline-flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border border-neutral-200 shadow-xs">
+                        <span className="font-mono font-bold text-xs text-neutral-900 select-all">
+                          {paymentSettings.upiId || 'stardot.b2b@okhdfcbank'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-neutral-600">
+                      <span className="text-neutral-400">Payee:</span>{' '}
+                      <strong className="text-neutral-800">{paymentSettings.upiName || 'Stardot Wholesale India'}</strong>
+                    </div>
+
+                    <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200/70 text-[11px] text-amber-800 flex items-center justify-center gap-1.5 font-medium">
+                      <Sparkles className="w-3.5 h-3.5 shrink-0 text-amber-600" />
+                      <span>Supports PhonePe, Google Pay, Paytm, BHIM, Cred</span>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-neutral-500 text-center italic">
+                    Yeh QR Code live checkout modal aur buyer tracking section me automatically show hota hai.
+                  </p>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Freight Delivery Charges & Cash on Delivery Configuration */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
+              
+              {/* Delivery Freight Settings */}
+              <div className="bg-white p-6 rounded-2xl border border-neutral-200 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                  <h4 className="text-sm font-bold text-neutral-900 flex items-center gap-2">
+                    <Truck className="w-4 h-4 text-red-800" />
+                    Delivery & Road Cargo Freight Setup
+                  </h4>
+                  <span className="text-[10px] font-bold text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
+                    Road Transport Bilti
+                  </span>
+                </div>
+
+                <div className="space-y-4 text-xs">
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-50 border border-neutral-200">
+                    <div>
+                      <p className="font-bold text-neutral-900">Free Delivery for All Orders</p>
+                      <p className="text-[11px] text-neutral-500">Agar on hai toh kisi bhi order par delivery charge nahi lagega.</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={paymentSettings.isFreeDelivery}
+                        onChange={(e) => setPaymentSettings({ ...paymentSettings, isFreeDelivery: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-10 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-800"></div>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="font-bold text-neutral-800 block mb-1">
+                        Flat Road Cargo Freight (₹)
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3.5 top-2.5 font-bold text-neutral-500">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={paymentSettings.flatDeliveryCharge}
+                          onChange={(e) => setPaymentSettings({ ...paymentSettings, flatDeliveryCharge: Math.max(0, parseInt(e.target.value) || 0) })}
+                          className="w-full pl-8 pr-3.5 py-2 rounded-xl border border-neutral-300 font-bold text-xs focus:border-red-800 focus:outline-none"
+                          disabled={paymentSettings.isFreeDelivery}
+                        />
+                      </div>
+                      <p className="text-[11px] text-neutral-400 mt-1">Standard transport bilti charges.</p>
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-neutral-800 block mb-1">
+                        Free Delivery Threshold (₹)
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3.5 top-2.5 font-bold text-neutral-500">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={paymentSettings.freeDeliveryThreshold}
+                          onChange={(e) => setPaymentSettings({ ...paymentSettings, freeDeliveryThreshold: Math.max(0, parseInt(e.target.value) || 0) })}
+                          className="w-full pl-8 pr-3.5 py-2 rounded-xl border border-neutral-300 font-bold text-xs focus:border-red-800 focus:outline-none"
+                          disabled={paymentSettings.isFreeDelivery}
+                        />
+                      </div>
+                      <p className="text-[11px] text-neutral-400 mt-1">Is amount se upar ke order par shipping free hogi.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Cash on Delivery (COD) Settings */}
+              <div className="bg-white p-6 rounded-2xl border border-neutral-200 shadow-xs space-y-4">
+                <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+                  <h4 className="text-sm font-bold text-neutral-900 flex items-center gap-2">
+                    <Building2 className="w-4 h-4 text-red-800" />
+                    Cash on Delivery (COD) & Advance Token
+                  </h4>
+                  <span className="text-[10px] font-bold text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
+                    Wholesale Bilti COD
+                  </span>
+                </div>
+
+                <div className="space-y-4 text-xs">
+                  <div className="flex items-center justify-between p-3 rounded-xl bg-neutral-50 border border-neutral-200">
+                    <div>
+                      <p className="font-bold text-neutral-900">Enable Cash on Delivery (COD)</p>
+                      <p className="text-[11px] text-neutral-500">Checkout par buyers ko COD option select karne ki permission de.</p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={paymentSettings.isCodEnabled}
+                        onChange={(e) => setPaymentSettings({ ...paymentSettings, isCodEnabled: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-10 h-5 bg-neutral-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-neutral-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-800"></div>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="font-bold text-neutral-800 block mb-1">
+                        Extra COD Handling Charge (₹)
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3.5 top-2.5 font-bold text-neutral-500">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={paymentSettings.codExtraCharge}
+                          onChange={(e) => setPaymentSettings({ ...paymentSettings, codExtraCharge: Math.max(0, parseInt(e.target.value) || 0) })}
+                          className="w-full pl-8 pr-3.5 py-2 rounded-xl border border-neutral-300 font-bold text-xs focus:border-red-800 focus:outline-none"
+                          disabled={!paymentSettings.isCodEnabled}
+                        />
+                      </div>
+                      <p className="text-[11px] text-neutral-400 mt-1">COD choose karne par extra charge jo add hoga.</p>
+                    </div>
+
+                    <div>
+                      <label className="font-bold text-neutral-800 block mb-1">
+                        Mandatory Advance Token (₹) <span className="text-red-800">*</span>
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3.5 top-2.5 font-bold text-neutral-500">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={paymentSettings.codAdvanceAmount}
+                          onChange={(e) => setPaymentSettings({ ...paymentSettings, codAdvanceAmount: Math.max(0, parseInt(e.target.value) || 0) })}
+                          className="w-full pl-8 pr-3.5 py-2 rounded-xl border border-neutral-300 font-bold text-xs focus:border-red-800 focus:outline-none"
+                          disabled={!paymentSettings.isCodEnabled}
+                        />
+                      </div>
+                      <p className="text-[11px] text-neutral-400 mt-1">COD confirm karne ke liye buyer ko pehle QR se itna token pay karna padega.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Bottom Save Action Button */}
+            <div className="bg-white p-5 rounded-2xl border border-neutral-200 shadow-xs flex items-center justify-between">
+              <div className="text-xs text-neutral-500">
+                Aapke changes turant <strong>Firebase & Local Storage</strong> me sync ho jayenge aur customer checkout par live reflect karenge.
+              </div>
+
+              <button
+                type="submit"
+                disabled={isSavingPaymentSettings}
+                className="px-8 py-3.5 bg-red-800 hover:bg-red-900 text-white rounded-xl font-black text-xs transition-all flex items-center gap-2 shadow-md active:scale-95 disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                <span>{isSavingPaymentSettings ? 'Saving to Firebase...' : 'Save UPI & Freight Settings'}</span>
+              </button>
+            </div>
+
+          </form>
+        )}
+
       </main>
 
       {/* ------------------------------------------------------------- */}
@@ -3077,11 +4125,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
             <div>
               <h4 className="text-base font-black font-heading text-neutral-900">
-                Confirm {deleteConfirmState.type === 'product' ? 'Product' : deleteConfirmState.type === 'heroSlide' ? 'Hero Banner' : 'Category'} Deletion
+                Confirm {deleteConfirmState.type === 'product' ? 'Product' : deleteConfirmState.type === 'heroSlide' ? 'Hero Banner' : deleteConfirmState.type === 'order' ? 'Transport Order' : 'Category'} Deletion
               </h4>
               <p className="text-xs text-neutral-600 mt-2 leading-relaxed">
                 Are you sure you want to permanently delete <strong className="text-neutral-900 font-bold">"{deleteConfirmState.name}"</strong>?
-                This will immediately remove it from Firebase and the storefront.
+                This will immediately remove it from Firebase and local records.
               </p>
             </div>
 
@@ -3096,7 +4144,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <button
                 type="button"
                 onClick={async () => {
-                  const { type, id, name } = deleteConfirmState;
+                  const { type, id, name, extraId } = deleteConfirmState;
                   setDeleteConfirmState(null);
                   if (type === 'product') {
                     try {
@@ -3125,6 +4173,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     } catch (err) {
                       console.error(err);
                       setStatusMessage('Error deleting hero slide.');
+                    }
+                  } else if (type === 'order') {
+                    try {
+                      await deleteOrderById(id, extraId);
+                      setStatusMessage(`Order "${name}" permanently deleted.`);
+                      setTimeout(() => setStatusMessage(null), 3500);
+                      setOrders(prev => prev.filter(o => o.id !== id));
+                    } catch (err) {
+                      console.error(err);
+                      setStatusMessage('Error deleting order.');
                     }
                   }
                 }}

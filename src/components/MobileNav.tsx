@@ -1,5 +1,5 @@
 import React from 'react';
-import { Home, Search, Heart, ShoppingBag, User } from 'lucide-react';
+import { Home, Search, Heart, ShoppingBag, User, Lock } from 'lucide-react';
 
 interface MobileNavProps {
   cartCount: number;
@@ -8,6 +8,8 @@ interface MobileNavProps {
   onOpenWishlist: () => void;
   onOpenAuth: () => void;
   onScrollToTop: () => void;
+  isAdmin?: boolean;
+  onOpenAdmin?: () => void;
 }
 
 export const MobileNav: React.FC<MobileNavProps> = ({
@@ -16,7 +18,9 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   onOpenCart,
   onOpenWishlist,
   onOpenAuth,
-  onScrollToTop
+  onScrollToTop,
+  isAdmin,
+  onOpenAdmin
 }) => {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[#ffffff]/95 backdrop-blur-md border-t border-[#e5e5df] md:hidden px-3 py-2 flex items-center justify-around shadow-lg">
@@ -74,6 +78,20 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         <User className="w-5 h-5" />
         <span className="text-[10px] font-semibold">Account</span>
       </button>
+
+      {isAdmin && onOpenAdmin && (
+        <button
+          onClick={onOpenAdmin}
+          className="flex flex-col items-center gap-1 text-red-800 hover:text-red-900 p-1 active:scale-95 transition-transform animate-in fade-in"
+          title="Open Admin Suite"
+        >
+          <div className="relative">
+            <Lock className="w-5 h-5 text-red-800" />
+            <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          </div>
+          <span className="text-[10px] font-black text-red-800">Admin</span>
+        </button>
+      )}
     </nav>
   );
 };

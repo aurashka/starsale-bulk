@@ -1,4 +1,4 @@
-import { Product, CategoryItem, HeroSlide } from '../types.ts';
+import { Product, CategoryItem, HeroSlide, PaymentSettings } from '../types.ts';
 
 export const DEFAULT_HERO_SLIDES: HeroSlide[] = [
   {
@@ -335,4 +335,16 @@ export const DEFAULT_FOOTER_INFO = {
   ],
   bottomCopyrightText: 'Stardot Wholesale India Pvt. Ltd. All rates in Indian Rupees (₹ INR) for registered trade buyers.',
   bottomNetworkText: 'All-India Transport Network'
+};
+
+export const DEFAULT_PAYMENT_SETTINGS: PaymentSettings = {
+  upiId: 'stardot.b2b@okhdfcbank',
+  upiName: 'Stardot Wholesale India Pvt Ltd',
+  qrCodeUrl: 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=upi%3A%2F%2Fpay%3Fpa%3Dstardot.b2b%40okhdfcbank%26pn%3DStardot%20Wholesale%20India%26cu%3DINR',
+  isFreeDelivery: false,
+  freeDeliveryThreshold: 20000,
+  flatDeliveryCharge: 450,
+  isCodEnabled: true,
+  codExtraCharge: 250,
+  codAdvanceAmount: 500
 };

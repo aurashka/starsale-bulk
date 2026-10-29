@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Lock } from 'lucide-react';
 import { Navbar } from './components/Navbar.tsx';
 import { HeroBanner } from './components/HeroBanner.tsx';
 import { CategoryScroller } from './components/CategoryScroller.tsx';
@@ -13,7 +14,8 @@ import { AdminPanel } from './components/AdminPanel.tsx';
 import { Footer } from './components/Footer.tsx';
 import { MobileNav } from './components/MobileNav.tsx';
 
-import { Product, CartItem, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide } from './types.ts';
+import { PaymentGatewayModal } from './components/PaymentGatewayModal.tsx';
+import { Product, CartItem, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide, PaymentSettings, WholesaleOrder } from './types.ts';
 import { 
   subscribeToProducts, 
   subscribeToCategories,
@@ -22,7 +24,13 @@ import {
   getLocalFooterInfo,
   getLocalHeroSlides,
   getSavedWishlist, 
-  saveWishlist 
+  saveWishlist,
+  getOrCreateDeviceUser,
+  getLocalPaymentSettings,
+  subscribeToPaymentSettings,
+  isUserAdmin,
+  subscribeToCurrentUser,
+  saveCurrentUser
 } from './services/dataService.ts';
 import { INITIAL_CATEGORIES } from './data/defaultProducts.ts';
 
@@ -45,37 +53,53 @@ export default function App() {
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isUserProfileOpen, setIsUserProfileOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
+  const [isPaymentGatewayOpen, setIsPaymentGatewayOpen] = useState(false);
+  const [activePaymentOrder, setActivePaymentOrder] = useState<WholesaleOrder | null>(null);
+  const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getLocalPaymentSettings());
 
-  // User state
+  // User state: Persistent device auto-login so guest orders are never lost across restarts
   const [currentUser, setCurrentUser] = useState<WholesaleUser | null>(() => {
     try {
-      const raw = localStorage.getItem('stardot_current_user');
-      if (raw) {
-        const u = JSON.parse(raw);
-        return {
-          ...u,
-          name: u.name || (u.email ? u.email.split('@')[0] : 'Trader'),
-          phone: u.phone || '+91 98000 00000',
-          role: u.role || 'user'
-        };
-      }
-      return null;
+      return getOrCreateDeviceUser();
     } catch {
       return null;
     }
   });
 
-  // Admin authentication state (Only active if role === 'admin')
+  // Admin authentication state: ONLY active if isUserAdmin(currentUser)
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(() => {
     try {
       const rawUser = localStorage.getItem('stardot_current_user');
       if (rawUser) {
         const u = JSON.parse(rawUser);
-        if (u.role === 'admin') return true;
+        return isUserAdmin(u);
       }
     } catch {}
-    return sessionStorage.getItem('stardot_admin_auth') === 'true';
+    return false;
   });
+
+  // Strict synchronization: Ensure isAdminLoggedIn is always synced with isUserAdmin(currentUser)
+  useEffect(() => {
+    const isMasterAdmin = isUserAdmin(currentUser);
+    setIsAdminLoggedIn(isMasterAdmin);
+    if (!isMasterAdmin) {
+      sessionStorage.removeItem('stardot_admin_auth');
+    } else {
+      sessionStorage.setItem('stardot_admin_auth', 'true');
+    }
+  }, [currentUser]);
+
+  // Real-time synchronization of current user from Firebase Realtime Database:
+  // When an admin edits the user in Firebase Console (e.g. changing role to 'admin'),
+  // this listener immediately reflects the change in the web app without requiring page refresh!
+  useEffect(() => {
+    const unsubUser = subscribeToCurrentUser(currentUser, (freshUser) => {
+      setCurrentUser(freshUser);
+    });
+    return () => {
+      if (typeof unsubUser === 'function') unsubUser();
+    };
+  }, [currentUser?.uid]);
 
   // Cart state
   const [cartItems, setCartItems] = useState<CartItem[]>(() => {
@@ -89,6 +113,17 @@ export default function App() {
 
   // Wishlist state
   const [wishlistIds, setWishlistIds] = useState<string[]>(() => getSavedWishlist());
+
+  // Listen for user auto-login events across components
+  useEffect(() => {
+    const handleUserChanged = (e: any) => {
+      if (e.detail) {
+        setCurrentUser(e.detail);
+      }
+    };
+    window.addEventListener('stardot_user_changed', handleUserChanged);
+    return () => window.removeEventListener('stardot_user_changed', handleUserChanged);
+  }, []);
 
   // Subscribe to Products, Categories, Footer Profile & Hero Banners
   useEffect(() => {
@@ -109,11 +144,16 @@ export default function App() {
       setHeroSlides(slides);
     });
 
+    const unsubPayment = subscribeToPaymentSettings((settings) => {
+      setPaymentSettings(settings);
+    });
+
     return () => {
       if (typeof unsubProducts === 'function') unsubProducts();
       if (typeof unsubCategories === 'function') unsubCategories();
       if (typeof unsubFooter === 'function') unsubFooter();
       if (typeof unsubHero === 'function') unsubHero();
+      if (typeof unsubPayment === 'function') unsubPayment();
     };
   }, []);
 
@@ -255,6 +295,20 @@ export default function App() {
   const handleAdminLoginSuccess = () => {
     setIsAdminLoggedIn(true);
     sessionStorage.setItem('stardot_admin_auth', 'true');
+    const adminUser: WholesaleUser = (currentUser && currentUser.role === 'admin')
+      ? currentUser
+      : {
+          uid: 'admin-master-uid',
+          name: 'System Admin',
+          email: 'admin@stardot.in',
+          phone: '+91 99999 00000',
+          role: 'admin',
+          companyName: 'Stardot Wholesale Admin'
+        };
+    setCurrentUser(adminUser);
+    try {
+      localStorage.setItem('stardot_current_user', JSON.stringify(adminUser));
+    } catch {}
   };
 
   const handleAdminLogout = () => {
@@ -379,6 +433,8 @@ export default function App() {
               }
             }}
             onScrollToTop={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            isAdmin={isUserAdmin(currentUser)}
+            onOpenAdmin={() => setIsAdminPanelOpen(true)}
           />
         </>
       )}
@@ -394,6 +450,12 @@ export default function App() {
           onRemoveItem={handleRemoveCartItem}
           onClearCart={handleClearCart}
           currentUser={currentUser}
+          paymentSettings={paymentSettings}
+          onUserAutoLogin={(u) => setCurrentUser(u)}
+          onOpenPaymentGateway={(ord) => {
+            setActivePaymentOrder(ord);
+            setIsPaymentGatewayOpen(true);
+          }}
         />
       )}
 
@@ -420,17 +482,53 @@ export default function App() {
       )}
 
       {/* User Profile & Live Order Tracking Full-Page View */}
-      {isUserProfileOpen && currentUser && (
+      {isUserProfileOpen && (
         <UserProfileModal
           isOpen={isUserProfileOpen}
           onClose={() => setIsUserProfileOpen(false)}
-          currentUser={currentUser}
+          currentUser={currentUser || getOrCreateDeviceUser()}
           onSignOut={handleBuyerSignOut}
+          onOpenPaymentGateway={(ord) => {
+            setActivePaymentOrder(ord);
+            setIsPaymentGatewayOpen(true);
+          }}
           onOpenAdmin={() => {
             setIsUserProfileOpen(false);
             setIsAdminPanelOpen(true);
           }}
         />
+      )}
+
+      
+      {/* UPI Payment Gateway & Verification Modal */}
+      {isPaymentGatewayOpen && activePaymentOrder && (
+        <PaymentGatewayModal
+          isOpen={isPaymentGatewayOpen}
+          onClose={() => setIsPaymentGatewayOpen(false)}
+          order={activePaymentOrder}
+          paymentSettings={paymentSettings}
+          onPaymentSuccess={(updatedOrder) => {
+            setActivePaymentOrder(updatedOrder);
+          }}
+          onOpenProfile={() => {
+            setIsPaymentGatewayOpen(false);
+            setIsUserProfileOpen(true);
+          }}
+        />
+      )}
+
+      {/* Floating Admin Quick Access Button: ONLY visible if isUserAdmin(currentUser) */}
+      {isUserAdmin(currentUser) && (
+        <button
+          type="button"
+          onClick={() => setIsAdminPanelOpen(true)}
+          className="fixed bottom-20 md:bottom-6 right-4 sm:right-6 z-50 bg-red-800 hover:bg-red-900 text-white px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-2 text-xs font-black border-2 border-white/30 transition-all hover:scale-105 active:scale-95 animate-in fade-in"
+          title="Open Admin Suite (Admin Access Only)"
+        >
+          <Lock className="w-4 h-4 text-red-200" />
+          <span>Admin Suite</span>
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+        </button>
       )}
 
       {/* Admin Suite: ONLY visible to role === 'admin' */}

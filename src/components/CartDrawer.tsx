@@ -8,10 +8,13 @@ import {
   CheckCircle2, 
   Truck, 
   ShieldCheck, 
-  MapPin 
+  MapPin,
+  QrCode,
+  Banknote,
+  Info
 } from 'lucide-react';
-import { CartItem, WholesaleOrder, WholesaleUser } from '../types.ts';
-import { createWholesaleOrder } from '../services/dataService.ts';
+import { CartItem, WholesaleOrder, WholesaleUser, PaymentSettings } from '../types.ts';
+import { createWholesaleOrder, getOrCreateDeviceUser, autoRegisterOrLoginCheckoutUser, getLocalPaymentSettings } from '../services/dataService.ts';
 import { formatPrice } from '../utils/format.ts';
 
 interface CartDrawerProps {
@@ -22,6 +25,9 @@ interface CartDrawerProps {
   onRemoveItem: (index: number) => void;
   onClearCart: () => void;
   currentUser: WholesaleUser | null;
+  paymentSettings?: PaymentSettings;
+  onUserAutoLogin?: (user: WholesaleUser) => void;
+  onOpenPaymentGateway?: (order: WholesaleOrder) => void;
 }
 
 export const CartDrawer: React.FC<CartDrawerProps> = ({
@@ -31,19 +37,24 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   onUpdateQuantity,
   onRemoveItem,
   onClearCart,
-  currentUser
+  currentUser,
+  paymentSettings: propPaymentSettings,
+  onUserAutoLogin,
+  onOpenPaymentGateway
 }) => {
+  const paymentSettings = propPaymentSettings || getLocalPaymentSettings();
   const [isCheckingOut, setIsCheckingOut] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [placedOrder, setPlacedOrder] = useState<WholesaleOrder | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'Prepaid UPI' | 'Cash on Delivery'>('Prepaid UPI');
 
-  // Form fields for Indian B2B buyers
+  // Form fields for Indian B2B buyers (Only Name & Phone are mandatory)
   const [companyName, setCompanyName] = useState(currentUser?.companyName || '');
   const [customerName, setCustomerName] = useState(currentUser?.name || '');
   const [email, setEmail] = useState(currentUser?.email || '');
   const [phone, setPhone] = useState(currentUser?.phone || '+91 ');
   const [city, setCity] = useState(currentUser?.city || '');
-  const [stateName, setStateName] = useState(currentUser?.state || 'Maharashtra');
+  const [stateName, setStateName] = useState(currentUser?.state || 'Direct Transport');
   const [pincode, setPincode] = useState('');
   const [shippingAddress, setShippingAddress] = useState('');
   const [gstin, setGstin] = useState(currentUser?.gstin || '');
@@ -56,34 +67,85 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const subtotal = items.reduce((acc, item) => acc + item.appliedUnitPrice * item.quantity, 0);
   const regularTotal = items.reduce((acc, item) => acc + item.product.basePrice * item.quantity, 0);
   const bulkSavings = regularTotal - subtotal;
-  const estimatedShipping = subtotal > 20000 ? 0 : 450; // Free transport cargo above ₹20,000
-  const finalTotal = subtotal + estimatedShipping;
+
+  // Dynamic delivery freight charges configured by Admin
+  const estimatedShipping = paymentSettings.isFreeDelivery
+    ? 0
+    : (paymentSettings.freeDeliveryThreshold > 0 && subtotal >= paymentSettings.freeDeliveryThreshold)
+    ? 0
+    : (paymentSettings.flatDeliveryCharge ?? 450);
+
+  // Cash on Delivery extra charge & advance token
+  const isCod = paymentMethod === 'Cash on Delivery' && paymentSettings.isCodEnabled;
+  const codExtraCharge = isCod ? (paymentSettings.codExtraCharge || 0) : 0;
+  const finalTotal = subtotal + estimatedShipping + codExtraCharge;
+  const payableNow = isCod 
+    ? Math.min(finalTotal, (paymentSettings.codAdvanceAmount || codExtraCharge || 500)) 
+    : finalTotal;
+  const codRemaining = isCod ? Math.max(0, finalTotal - payableNow) : 0;
 
   const handleSubmitOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (items.length === 0) return;
 
+    const trimmedName = customerName.trim();
+    const rawDigits = phone.replace(/\D/g, '');
+    if (!trimmedName) {
+      alert('Please enter your Name or Contact Person name.');
+      return;
+    }
+    if (rawDigits.length < 10) {
+      alert('Please enter a valid 10-digit Mobile / WhatsApp Number.');
+      return;
+    }
+
     setIsSubmitting(true);
+
+    // 1. AUTO-LOGIN / REGISTER: If not logged in, automatically create user account & log in!
+    let activeUser: WholesaleUser;
+    if (currentUser && currentUser.uid && currentUser.role !== 'admin') {
+      activeUser = currentUser;
+    } else {
+      activeUser = await autoRegisterOrLoginCheckoutUser({
+        name: trimmedName,
+        phone,
+        email,
+        companyName,
+        city,
+        state: stateName,
+        gstin
+      });
+      if (onUserAutoLogin) {
+        onUserAutoLogin(activeUser);
+      }
+    }
+
     const orderNumber = `STD-IN-${Math.floor(100000 + Math.random() * 900000)}`;
+    const ticketId = `TRK-${orderNumber.replace(/[^0-9]/g, '')}`;
+
     const newOrder: WholesaleOrder = {
       id: `order-${Date.now()}`,
       orderNumber,
+      trackingTicketId: ticketId,
       createdAt: Date.now(),
-      userId: currentUser?.uid || (phone ? `usr_${phone.replace(/\D/g, '')}` : `guest_${Date.now()}`),
+      userId: activeUser.uid,
       trackingStep: 1,
       trackingBiltiNumber: `VRL-${Math.floor(100000 + Math.random() * 900000)}`,
-      customerName: customerName || 'Retail Partner',
-      companyName: companyName || 'B2B Retail Store',
-      email: email || 'buyer@business.in',
-      phone: phone || '+91 98000 00000',
-      city: city || 'Mumbai',
-      state: stateName || 'Maharashtra',
-      pincode: pincode || '400001',
-      shippingAddress: shippingAddress || 'Direct Transport Godown Delivery',
-      gstin: gstin || undefined,
+      trackingCarrier: transportPreference || 'VRL Logistics India',
+      customerName: trimmedName,
+      companyName: companyName.trim() || 'B2B Retail Store',
+      email: activeUser.email,
+      phone: activeUser.phone,
+      city: city.trim() || 'Direct Godown',
+      state: stateName.trim() || 'Direct Road Cargo',
+      pincode: pincode.trim() || '400001',
+      shippingAddress: shippingAddress.trim() || 'Direct Transport Godown Delivery',
+      gstin: gstin.trim() || undefined,
       transportPreference,
-      notes: notes || undefined,
-      statusNote: 'Consignment order received. Pending dispatch desk review.',
+      notes: notes.trim() || undefined,
+      statusNote: isCod 
+        ? `COD Consignment booked. Pay advance ₹${payableNow} via UPI QR to dispatch. Remaining ₹${codRemaining} on delivery.`
+        : 'Prepaid consignment order booked. Scan UPI QR and submit UTR to verify.',
       items: items.map(item => ({
         productId: item.product.id,
         productName: item.product.name,
@@ -97,7 +159,12 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       totalQuantity,
       subtotal,
       estimatedShipping,
+      codCharge: isCod ? codExtraCharge : undefined,
+      codAdvanceAmount: isCod ? payableNow : undefined,
+      codRemainingAmount: isCod ? codRemaining : undefined,
       totalAmount: finalTotal,
+      paymentMethod,
+      paymentStatus: 'Pending Payment',
       status: 'Pending Review'
     };
 
@@ -105,6 +172,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
       await createWholesaleOrder(newOrder);
       setPlacedOrder(newOrder);
       onClearCart();
+      onClose(); // Close CartDrawer so PaymentGatewayModal is clean and unobstructed
+      if (onOpenPaymentGateway) {
+        onOpenPaymentGateway(newOrder);
+      }
     } catch (err) {
       console.error('Order creation error:', err);
     } finally {
@@ -198,15 +269,50 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             
             /* State 2: Checkout Form with Indian details */
             <form onSubmit={handleSubmitOrder} className="space-y-4 text-xs">
-              <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl flex items-center gap-2 text-amber-900">
-                <Building2 className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                <span>Fill business billing details for GST invoice and transport bilti / consignment note.</span>
+              <div className="bg-emerald-50 border border-emerald-200 p-3 rounded-xl flex items-start gap-2.5 text-emerald-950">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="font-bold block">Quick Booking (No Login Required)</span>
+                  <span className="text-[11px] text-emerald-800">
+                    Sirf apna Naam aur Mobile Number daalein. Order aapke isi phone/browser me auto-save rahega restart hone par bhi!
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="font-bold text-neutral-900 flex items-center justify-between">
+                    <span>Contact Name *</span>
+                    <span className="text-[10px] text-red-600 font-bold">Required</span>
+                  </label>
+                  <input
+                    required
+                    type="text"
+                    placeholder="Enter your name"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 focus:border-red-600 focus:outline-none font-medium"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-bold text-neutral-900 flex items-center justify-between">
+                    <span>Mobile / WhatsApp *</span>
+                    <span className="text-[10px] text-red-600 font-bold">Required</span>
+                  </label>
+                  <input
+                    required
+                    type="tel"
+                    placeholder="+91 98765 43210"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 focus:border-red-600 focus:outline-none font-mono font-medium"
+                  />
+                </div>
               </div>
 
               <div className="space-y-1">
-                <label className="font-bold text-neutral-800">Firm / Shop / Company Name *</label>
+                <label className="font-bold text-neutral-800">Firm / Shop / Company Name (Optional)</label>
                 <input
-                  required
                   type="text"
                   placeholder="e.g. Royal Fashion Studio & Retailers"
                   value={companyName}
@@ -215,37 +321,11 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-bold text-neutral-800">Contact Person *</label>
-                  <input
-                    required
-                    type="text"
-                    placeholder="Full Name"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 focus:border-red-600 focus:outline-none"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-bold text-neutral-800">Mobile Number (+91) *</label>
-                  <input
-                    required
-                    type="tel"
-                    placeholder="+91 98765 43210"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
-                    className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 focus:border-red-600 focus:outline-none font-mono"
-                  />
-                </div>
-              </div>
-
               <div className="space-y-1">
-                <label className="font-bold text-neutral-800">Business Email *</label>
+                <label className="font-bold text-neutral-800">Email ID (Optional)</label>
                 <input
-                  required
                   type="email"
-                  placeholder="billing@yourstore.in"
+                  placeholder="billing@yourstore.in (optional)"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl border border-neutral-300 focus:border-red-600 focus:outline-none"
@@ -254,9 +334,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
               <div className="grid grid-cols-3 gap-2">
                 <div className="space-y-1">
-                  <label className="font-bold text-neutral-800">City *</label>
+                  <label className="font-bold text-neutral-800">City (Optional)</label>
                   <input
-                    required
                     type="text"
                     placeholder="e.g. Indore"
                     value={city}
@@ -265,9 +344,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="font-bold text-neutral-800">State *</label>
+                  <label className="font-bold text-neutral-800">State (Optional)</label>
                   <input
-                    required
                     type="text"
                     placeholder="e.g. MP / Gujarat"
                     value={stateName}
@@ -276,9 +354,8 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="font-bold text-neutral-800">Pincode *</label>
+                  <label className="font-bold text-neutral-800">Pincode (Optional)</label>
                   <input
-                    required
                     type="text"
                     maxLength={6}
                     placeholder="452001"
@@ -290,11 +367,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
               </div>
 
               <div className="space-y-1">
-                <label className="font-bold text-neutral-800">Delivery Address / Transport Godown *</label>
+                <label className="font-bold text-neutral-800">Delivery Address / Transport Godown (Optional)</label>
                 <textarea
-                  required
                   rows={2}
-                  placeholder="Shop number, Market complex, Road, Landmark"
+                  placeholder="Shop number, Road, Godown / Transport office address"
                   value={shippingAddress}
                   onChange={(e) => setShippingAddress(e.target.value)}
                   className="w-full px-3 py-2 rounded-xl border border-neutral-300 focus:border-red-600 focus:outline-none"
@@ -338,38 +414,158 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                 />
               </div>
 
-              {/* Order summary mini block */}
-              <div className="bg-[#fcfcfa] p-3 rounded-xl border border-neutral-200 space-y-1.5 pt-3">
-                <div className="flex justify-between text-neutral-600">
-                  <span>Total Wholesale Units:</span>
-                  <span className="font-bold text-neutral-900">{totalQuantity} pcs</span>
+              {/* Itemized Consignment Lot Summary */}
+              <div className="bg-[#fcfcfa] p-3.5 rounded-2xl border border-neutral-200 space-y-2">
+                <span className="font-bold text-neutral-900 text-[11px] uppercase tracking-wider block">
+                  Items in Consignment ({items.length} lots • {totalQuantity} pcs):
+                </span>
+                <div className="divide-y divide-neutral-100 max-h-36 overflow-y-auto no-scrollbar pr-1">
+                  {items.map((it, i) => (
+                    <div key={i} className="py-1.5 flex items-center justify-between gap-2 text-[11px]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {it.product.images[0] && (
+                          <img 
+                            src={it.product.images[0]} 
+                            alt={it.product.name} 
+                            className="w-7 h-8 object-cover rounded bg-neutral-100 flex-shrink-0 border border-neutral-200"
+                          />
+                        )}
+                        <span className="truncate font-medium text-neutral-800">
+                          {it.product.name} ({it.selectedSize}/{it.selectedColor})
+                        </span>
+                      </div>
+                      <span className="font-mono text-neutral-600 flex-shrink-0">
+                        {it.quantity} pcs @ ₹{it.appliedUnitPrice} = <strong>₹{formatPrice(it.appliedUnitPrice * it.quantity)}</strong>
+                      </span>
+                    </div>
+                  ))}
                 </div>
+              </div>
+
+              {/* Payment Mode Selection (Prepaid UPI vs Cash on Delivery) */}
+              <div className="space-y-2 pt-1">
+                <label className="font-bold text-neutral-900 block text-xs">
+                  Select Payment Method *
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {/* Option 1: Prepaid UPI QR */}
+                  <div 
+                    onClick={() => setPaymentMethod('Prepaid UPI')}
+                    className={`p-3 rounded-2xl border cursor-pointer transition-all ${
+                      paymentMethod === 'Prepaid UPI'
+                        ? 'border-red-800 bg-red-50/50 ring-2 ring-red-100 shadow-xs'
+                        : 'border-neutral-200 bg-white hover:border-neutral-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <QrCode className="w-4 h-4 text-red-800" />
+                        <span className="font-black text-xs text-neutral-900">Prepaid UPI QR</span>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 px-1.5 py-0.5 rounded">
+                        Fastest Dispatch
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-neutral-500 leading-tight">
+                      Scan UPI QR & submit UTR. 100% online verification with full invoice credit.
+                    </p>
+                  </div>
+
+                  {/* Option 2: Cash on Delivery (Advance Required) */}
+                  {paymentSettings.isCodEnabled !== false && (
+                    <div 
+                      onClick={() => setPaymentMethod('Cash on Delivery')}
+                      className={`p-3 rounded-2xl border cursor-pointer transition-all ${
+                        paymentMethod === 'Cash on Delivery'
+                          ? 'border-amber-700 bg-amber-50/50 ring-2 ring-amber-100 shadow-xs'
+                          : 'border-neutral-200 bg-white hover:border-neutral-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <Banknote className="w-4 h-4 text-amber-700" />
+                          <span className="font-black text-xs text-neutral-900">Cash on Delivery</span>
+                        </div>
+                        {codExtraCharge > 0 && (
+                          <span className="text-[10px] font-mono font-bold bg-amber-100 text-amber-900 px-1.5 py-0.5 rounded">
+                            +₹{codExtraCharge} COD fee
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-neutral-500 leading-tight">
+                        Pay ₹{formatPrice(payableNow)} Advance Token via QR now. Rest ₹{formatPrice(codRemaining)} on delivery.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Detailed Financial Summary */}
+              <div className="bg-[#fcfcfa] p-3.5 rounded-2xl border border-neutral-200 space-y-1.5 text-xs">
+                <div className="flex justify-between text-neutral-600">
+                  <span>Goods Subtotal:</span>
+                  <span className="font-bold text-neutral-900">₹{formatPrice(subtotal)}</span>
+                </div>
+
                 <div className="flex justify-between text-neutral-600">
                   <span>Road Freight Cargo:</span>
                   <span className="font-bold text-emerald-700">
-                    {estimatedShipping === 0 ? 'FREE Cargo Transport (Order > ₹20k)' : `₹${estimatedShipping}`}
+                    {estimatedShipping === 0 
+                      ? 'FREE Transport Cargo' 
+                      : `₹${formatPrice(estimatedShipping)}`}
                   </span>
                 </div>
-                <div className="flex justify-between text-neutral-900 font-black text-sm pt-1 border-t border-neutral-200">
-                  <span>Payable Amount (₹ INR):</span>
-                  <span className="text-red-600">₹{formatPrice(finalTotal)}</span>
+
+                {isCod && codExtraCharge > 0 && (
+                  <div className="flex justify-between text-neutral-600">
+                    <span>COD Handling Fee:</span>
+                    <span className="font-bold text-amber-900">+₹{formatPrice(codExtraCharge)}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-between text-neutral-900 font-bold pt-1 border-t border-neutral-200">
+                  <span>Total Consignment Value:</span>
+                  <span>₹{formatPrice(finalTotal)}</span>
                 </div>
+
+                {/* Payable Now Highlight */}
+                <div className="flex justify-between text-neutral-900 font-black text-sm pt-1.5 border-t border-neutral-300">
+                  <span className="flex items-center gap-1">
+                    <span>Payable Now via UPI QR:</span>
+                    {isCod && <span className="text-[10px] font-bold text-amber-700 font-normal">(Advance Token)</span>}
+                  </span>
+                  <span className="text-red-700 text-base">₹{formatPrice(payableNow)}</span>
+                </div>
+
+                {isCod && codRemaining > 0 && (
+                  <div className="flex justify-between text-amber-900 font-bold text-[11px] pt-1">
+                    <span>Remaining Balance on Delivery:</span>
+                    <span className="font-mono">₹{formatPrice(codRemaining)}</span>
+                  </div>
+                )}
               </div>
 
               <div className="pt-2 flex gap-2">
                 <button
                   type="button"
                   onClick={() => setIsCheckingOut(false)}
-                  className="px-4 py-3 rounded-full border border-neutral-300 font-bold text-neutral-700 hover:bg-neutral-100"
+                  className="px-4 py-3 rounded-xl border border-neutral-300 font-bold text-neutral-700 hover:bg-neutral-100 text-xs"
                 >
                   Back
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmitting}
-                  className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white rounded-full font-black transition-all shadow-md disabled:opacity-50"
+                  className="flex-1 py-3.5 bg-red-800 hover:bg-red-900 text-white rounded-xl font-black text-xs sm:text-sm transition-all shadow-md hover:shadow-lg disabled:opacity-50 flex items-center justify-center gap-2 active:scale-98"
                 >
-                  {isSubmitting ? 'Booking Order...' : `Book Lot (₹${formatPrice(finalTotal)})`}
+                  <QrCode className="w-4 h-4" />
+                  <span>
+                    {isSubmitting 
+                      ? 'Generating UPI Gateway...' 
+                      : isCod 
+                      ? `Confirm COD & Pay ₹${formatPrice(payableNow)} Advance` 
+                      : `Pay ₹${formatPrice(payableNow)} via UPI QR`}
+                  </span>
                 </button>
               </div>
             </form>

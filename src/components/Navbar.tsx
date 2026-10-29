@@ -9,6 +9,7 @@ import {
   CheckCircle2 
 } from 'lucide-react';
 import { WholesaleUser } from '../types.ts';
+import { isUserAdmin } from '../services/dataService.ts';
 
 interface NavbarProps {
   searchQuery: string;
@@ -40,8 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
 
   // STRICT REQUIREMENT: Admin button ONLY visible to role === 'admin'
-  // Absolutely no secret/hidden text visible to regular users or guests!
-  const isSuperAdmin = currentUser?.role === 'admin';
+  const isSuperAdmin = isUserAdmin(currentUser);
 
   return (
     <>
@@ -177,14 +177,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </span>
                 </button>
 
-                {/* Show Admin Suite button in header ONLY for logged in admin */}
+                {/* Show Admin Suite button in header for logged in admin */}
                 {isSuperAdmin && (
                   <button
                     onClick={onOpenAdminPanel}
-                    className="hidden lg:flex items-center gap-1.5 px-3.5 py-1.5 bg-red-800 text-white rounded-full text-xs font-bold hover:bg-red-900 transition-all shadow-sm"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-red-800 text-white rounded-full text-xs font-bold hover:bg-red-900 transition-all shadow-sm active:scale-95"
+                    title="Open Admin Suite"
                   >
                     <Lock className="w-3.5 h-3.5 text-red-200" />
-                    <span>Admin Suite</span>
+                    <span className="hidden sm:inline">Admin Suite</span>
+                    <span className="sm:hidden">Admin</span>
                   </button>
                 )}
               </div>

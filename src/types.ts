@@ -86,9 +86,29 @@ export interface CartItem {
   appliedUnitPrice: number; // In INR (₹)
 }
 
+export interface PaymentSettings {
+  upiId: string;
+  upiName: string;
+  qrCodeUrl: string;
+  isFreeDelivery: boolean;
+  freeDeliveryThreshold: number; // e.g. 20000
+  flatDeliveryCharge: number; // e.g. 450
+  isCodEnabled: boolean;
+  codExtraCharge: number; // e.g. 250
+  codAdvanceAmount: number; // e.g. 500
+}
+
+export interface DeliveryAttempt {
+  attemptNumber: number;
+  date: number;
+  reason: string;
+  note?: string;
+}
+
 export interface WholesaleOrder {
   id: string;
   orderNumber: string;
+  trackingTicketId?: string; // e.g. TRK-2026-84920
   createdAt: number;
   userId?: string;
   customerName: string;
@@ -114,10 +134,26 @@ export interface WholesaleOrder {
   totalQuantity: number;
   subtotal: number;
   estimatedShipping: number;
+  codCharge?: number;
   totalAmount: number;
-  status: 'Pending Review' | 'Confirmed' | 'Dispatched' | 'Delivered' | 'Rejected' | 'Delivery Attempted';
-  trackingStep?: number; // 1: Confirmed, 2: Packed & Bilti, 3: In Transit, 4: Delivered, 5: Delivery Attempted, 0: Rejected
+
+  // Payment Details
+  paymentMethod: 'Prepaid UPI' | 'Cash on Delivery';
+  paymentStatus: 'Pending Payment' | 'Payment Verification' | 'Paid' | 'Payment Failed' | 'UTR Resubmit Requested';
+  paymentUtr?: string;
+  paidAmount?: number;
+  codAdvanceAmount?: number;
+  codRemainingAmount?: number;
+  paymentErrorNote?: string;
+  utrResubmitAllowed?: boolean;
+
+  // Consignment & Dispatch Tracking
+  status: 'Pending Review' | 'Payment Verification' | 'Confirmed' | 'Dispatched' | 'Out for Delivery' | 'Delivered' | 'Rejected' | 'Delivery Attempted';
+  trackingStep?: number; // 0: Rejected, 1: Payment Verification, 2: Confirmed & Packing, 3: In Transit, 4: Out for Delivery, 5: Delivered, 6: Delivery Attempted
   trackingBiltiNumber?: string;
+  trackingCarrier?: string;
+  deliveryAttempts?: DeliveryAttempt[];
+  trackingTimeline?: { status: string; title: string; note?: string; timestamp: number }[];
   notes?: string;
   statusNote?: string; // Custom message note if rejected, delivery attempted, or transit update
   updatedAt?: number;

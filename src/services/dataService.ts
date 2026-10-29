@@ -13,8 +13,8 @@ import {
   remove,
   update
 } from '../firebase.ts';
-import { Product, WholesaleOrder, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide } from '../types.ts';
-import { INITIAL_PRODUCTS, INITIAL_CATEGORIES, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES } from '../data/defaultProducts.ts';
+import { Product, WholesaleOrder, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide, PaymentSettings } from '../types.ts';
+import { INITIAL_PRODUCTS, INITIAL_CATEGORIES, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES, DEFAULT_PAYMENT_SETTINGS } from '../data/defaultProducts.ts';
 
 const PRODUCTS_COLLECTION = 'products';
 const ORDERS_COLLECTION = 'wholesale_orders';
@@ -531,10 +531,340 @@ export async function deleteProductById(productId: string): Promise<void> {
   }
 }
 
+// Validate real non-empty orders and filter out ghost/demo/deleted entries
+export function isValidRealOrder(ord: any): ord is WholesaleOrder {
+  if (!ord || typeof ord !== 'object') return false;
+  if (!ord.id || typeof ord.id !== 'string') return false;
+  if (ord.isDeleted === true) return false;
+
+  // Filter out completely empty/test records with no buyer identity or order #
+  const hasIdentity = Boolean(
+    (ord.customerName && ord.customerName.trim().length > 0) ||
+    (ord.phone && ord.phone.replace(/\D/g, '').length >= 4) ||
+    (ord.orderNumber && ord.orderNumber.trim().length > 0)
+  );
+
+  // Must have goods or valid total value (not empty zero ghost)
+  const hasItems = Array.isArray(ord.items) && ord.items.length > 0;
+  const hasAmount = typeof ord.totalAmount === 'number' && ord.totalAmount > 0;
+
+  return hasIdentity && (hasItems || hasAmount);
+}
+
+// Device & Guest User Auto-Login Persistence (No forced login required to order)
+const DEVICE_USER_KEY = 'stardot_device_user_id';
+const CURRENT_USER_KEY = 'stardot_current_user';
+
+// Robust check if user has admin privileges (STRICT: role === 'admin')
+export function isUserAdmin(user?: WholesaleUser | Partial<WholesaleUser> | null): boolean {
+  if (!user) return false;
+  // Guest device users are strictly NOT admin
+  if (user.uid && user.uid.startsWith('dev_')) return false;
+
+  const role = String(user.role || '').trim().toLowerCase();
+  return role === 'admin' || role === 'superadmin' || role === 'administrator';
+}
+
+export function saveCurrentUser(user: WholesaleUser) {
+  try {
+    const isAdmin = isUserAdmin(user);
+    const normalized: WholesaleUser = {
+      ...user,
+      role: isAdmin ? 'admin' : 'user'
+    };
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(normalized));
+    if (isAdmin) {
+      sessionStorage.setItem('stardot_admin_auth', 'true');
+    } else {
+      sessionStorage.removeItem('stardot_admin_auth');
+    }
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('stardot_user_changed', { detail: normalized }));
+    }
+  } catch (e) {
+    console.warn('saveCurrentUser error:', e);
+  }
+}
+
+export function getCurrentStoredUser(): WholesaleUser | null {
+  try {
+    const raw = localStorage.getItem(CURRENT_USER_KEY);
+    if (raw) {
+      const u: WholesaleUser = JSON.parse(raw);
+      if (u.uid && u.uid.startsWith('dev_')) {
+        u.role = 'user';
+      } else {
+        u.role = isUserAdmin(u) ? 'admin' : 'user';
+      }
+      return u;
+    }
+  } catch {}
+  return null;
+}
+
+// Live real-time listener for current logged-in user's role from Firebase RTDB
+export function subscribeToCurrentUser(
+  currentUser: WholesaleUser | null,
+  onUserUpdate: (updatedUser: WholesaleUser) => void
+): () => void {
+  if (!currentUser || !currentUser.uid) return () => {};
+  // Device/guest users are strictly role 'user' and do not listen for admin promotion
+  if (currentUser.uid.startsWith('dev_')) return () => {};
+
+  let isMounted = true;
+
+  // Listen ONLY to this authenticated user's node in Firebase Realtime Database
+  const userRef = ref(rtdb, `users/${currentUser.uid}`);
+  const unsubUser = onValue(userRef, (snapshot) => {
+    if (!isMounted) return;
+    const data = snapshot.val();
+    if (data && typeof data === 'object') {
+      const targetRole: 'admin' | 'user' = isUserAdmin(data) ? 'admin' : 'user';
+      const enriched: WholesaleUser = {
+        ...currentUser,
+        ...data,
+        uid: currentUser.uid,
+        role: targetRole
+      };
+      if (currentUser.role !== targetRole || currentUser.name !== data.name) {
+        saveCurrentUser(enriched);
+        onUserUpdate(enriched);
+      }
+    }
+  }, (err) => {
+    console.warn('subscribeToCurrentUser RTDB error:', err);
+  });
+
+  return () => {
+    isMounted = false;
+    if (typeof unsubUser === 'function') unsubUser();
+  };
+}
+
+export function getOrCreateDeviceUser(existingData?: Partial<WholesaleUser>): WholesaleUser {
+  try {
+    const raw = localStorage.getItem(CURRENT_USER_KEY);
+    if (raw) {
+      const u: WholesaleUser = JSON.parse(raw);
+      if (u && u.uid) {
+        if (u.uid.startsWith('dev_')) {
+          u.role = 'user';
+        } else {
+          u.role = isUserAdmin(u) ? 'admin' : 'user';
+        }
+        if (existingData && Object.keys(existingData).length > 0) {
+          const updated: WholesaleUser = {
+            ...u,
+            ...existingData,
+            name: existingData.name?.trim() || u.name,
+            phone: existingData.phone?.trim() || u.phone,
+            companyName: existingData.companyName?.trim() || u.companyName,
+            city: existingData.city?.trim() || u.city,
+            state: existingData.state?.trim() || u.state,
+            gstin: existingData.gstin?.trim() || u.gstin,
+            role: (u.uid.startsWith('dev_')) ? 'user' : (isUserAdmin(existingData) ? 'admin' : (u.role || 'user'))
+          };
+          localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(updated));
+          return updated;
+        }
+        return u;
+      }
+    }
+  } catch (e) {
+    console.warn('Device user read error:', e);
+  }
+
+  // Create or retrieve persistent device ID
+  let deviceId = '';
+  try {
+    deviceId = localStorage.getItem(DEVICE_USER_KEY) || '';
+  } catch {}
+
+  if (!deviceId) {
+    deviceId = `dev_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    try {
+      localStorage.setItem(DEVICE_USER_KEY, deviceId);
+    } catch {}
+  }
+
+  const newDeviceUser: WholesaleUser = {
+    uid: deviceId,
+    name: existingData?.name?.trim() || 'Trader Partner',
+    phone: existingData?.phone?.trim() || '',
+    email: existingData?.email?.trim() || `trader_${deviceId.slice(-5)}@stardot.in`,
+    role: 'user', // Device users are strictly role 'user'
+    companyName: existingData?.companyName?.trim() || 'Retail Partner',
+    city: existingData?.city?.trim() || 'Direct Godown',
+    state: existingData?.state?.trim() || 'India',
+    gstin: existingData?.gstin?.trim() || undefined
+  };
+
+  try {
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(newDeviceUser));
+  } catch (e) {
+    console.warn('Device user save error:', e);
+  }
+
+  return newDeviceUser;
+}
+
+// Delete Wholesale Order permanently from localStorage, RTDB & Firestore
+export async function deleteOrderById(orderId: string, userId?: string): Promise<void> {
+  // 1. Remove from LocalStorage
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const filtered = list.filter(o => o.id !== orderId);
+      localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(filtered));
+    }
+  } catch (err) {
+    console.warn('Local order delete error:', err);
+  }
+
+  // 2. Remove from Firebase Realtime Database
+  try {
+    await remove(ref(rtdb, `wholesale_orders/${orderId}`));
+    if (userId) {
+      await remove(ref(rtdb, `user_orders/${userId}/${orderId}`));
+    }
+  } catch (err) {
+    console.warn('RTDB delete order error:', err);
+  }
+
+  // 3. Remove from Firebase Firestore
+  try {
+    await deleteDoc(doc(db, ORDERS_COLLECTION, orderId));
+    if (userId) {
+      await deleteDoc(doc(db, USERS_COLLECTION, userId, 'orders', orderId));
+    }
+  } catch (err) {
+    console.warn('Firestore delete order error:', err);
+  }
+}
+
+// Purge all corrupt, empty, and ghost demo orders
+export async function purgeCorruptOrders(): Promise<number> {
+  let purgedCount = 0;
+
+  // 1. LocalStorage clean
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const valid = list.filter(isValidRealOrder);
+      purgedCount += Math.max(0, list.length - valid.length);
+      localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(valid));
+    }
+  } catch (err) {
+    console.warn(err);
+  }
+
+  // 2. RTDB clean
+  try {
+    const snapshot = await get(ref(rtdb, 'wholesale_orders'));
+    if (snapshot.exists()) {
+      const data = snapshot.val();
+      for (const key of Object.keys(data)) {
+        const item = data[key];
+        if (!isValidRealOrder(item)) {
+          await remove(ref(rtdb, `wholesale_orders/${key}`));
+          purgedCount++;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('RTDB purge error:', err);
+  }
+
+  return purgedCount;
+}
+
 // Save Wholesale Order user-wise & in root collection
+// Auto-Register or Log in buyer during checkout/payment
+export async function autoRegisterOrLoginCheckoutUser(data: {
+  name: string;
+  phone: string;
+  email?: string;
+  companyName?: string;
+  city?: string;
+  state?: string;
+  gstin?: string;
+}): Promise<WholesaleUser> {
+  const cleanPhone10 = (data.phone || '').replace(/\D/g, '').slice(-10);
+  const uid = cleanPhone10.length >= 10 ? `usr_${cleanPhone10}` : `usr_${Date.now()}`;
+  const formattedPhone = cleanPhone10.length >= 10 ? `+91 ${cleanPhone10}` : data.phone.trim();
+  const formattedEmail = (data.email && data.email.trim()) ? data.email.trim().toLowerCase() : `trader_${cleanPhone10 || 'buyer'}@stardot.in`;
+  const name = data.name?.trim() || 'Trader Partner';
+
+  const userObj: WholesaleUser = {
+    uid,
+    name,
+    phone: formattedPhone,
+    email: formattedEmail,
+    role: 'user',
+    companyName: data.companyName?.trim() || 'Retail Partner',
+    city: data.city?.trim() || 'Direct Godown',
+    state: data.state?.trim() || 'India',
+    gstin: data.gstin?.trim() || undefined
+  };
+
+  try {
+    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(userObj));
+    localStorage.setItem(DEVICE_USER_KEY, uid);
+  } catch (e) {
+    console.warn(e);
+  }
+
+  try {
+    const raw = localStorage.getItem(LOCAL_USERS_KEY);
+    const users: any[] = raw ? JSON.parse(raw) : [];
+    const idx = users.findIndex(u => u.uid === uid || (u.phone && u.phone.replace(/\D/g, '').slice(-10) === cleanPhone10));
+    if (idx >= 0) {
+      users[idx] = { ...users[idx], ...userObj };
+    } else {
+      users.push({ ...userObj, passwordHash: 'auto_trader' });
+    }
+    localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users));
+  } catch (e) {
+    console.warn(e);
+  }
+
+  try {
+    await update(ref(rtdb, `users/${uid}`), {
+      ...userObj,
+      updatedAt: Date.now()
+    });
+  } catch (err) {
+    console.warn('RTDB user auto-save note:', err);
+  }
+
+  try {
+    await setDoc(doc(db, USERS_COLLECTION, uid), {
+      ...userObj,
+      updatedAt: Date.now()
+    }, { merge: true });
+  } catch (err) {
+    console.warn('Firestore user auto-save note:', err);
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('stardot_user_changed', { detail: userObj }));
+  }
+
+  return userObj;
+}
+
 export async function createWholesaleOrder(order: WholesaleOrder): Promise<void> {
+  const cleanDigits = (order.phone || '').replace(/\D/g, '').slice(-10);
+  const resolvedUserId = order.userId || (cleanDigits.length >= 10 ? `usr_${cleanDigits}` : `usr_${Date.now()}`);
+  const ticketId = order.trackingTicketId || `TRK-${(order.orderNumber || '').replace(/[^0-9]/g, '') || Math.floor(100000 + Math.random() * 900000)}`;
+  
   const enrichedOrder: WholesaleOrder = {
     ...order,
+    userId: resolvedUserId,
+    trackingTicketId: ticketId,
+    trackingCarrier: order.trackingCarrier || order.transportPreference || 'VRL Logistics India',
     updatedAt: Date.now()
   };
 
@@ -547,7 +877,9 @@ export async function createWholesaleOrder(order: WholesaleOrder): Promise<void>
     } else {
       list.unshift(enrichedOrder);
     }
-    localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+    // Filter out invalid items when saving
+    const valid = list.filter(isValidRealOrder);
+    localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(valid));
   } catch (err) {
     console.warn('Local order save error', err);
   }
@@ -577,16 +909,23 @@ export async function createWholesaleOrder(order: WholesaleOrder): Promise<void>
   } catch (err) {
     console.warn('Firestore order save notice:', err);
   }
+
+  // Immediately broadcast to local subscribers
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('stardot_orders_updated'));
+  }
 }
 
-// Update order status, tracking ID, rejected state, delivery attempt, and custom note
+// Update order status, tracking ID, rejected state, delivery attempt, and custom note IN-PLACE
 export async function updateOrderStatus(
   orderId: string, 
   status: WholesaleOrder['status'], 
   trackingStep: number, 
   biltiNumber?: string,
   statusNote?: string,
-  userId?: string
+  userId?: string,
+  carrier?: string,
+  deliveryAttemptReason?: string
 ): Promise<void> {
   const updatePayload: Record<string, any> = {
     status,
@@ -595,16 +934,37 @@ export async function updateOrderStatus(
   };
   if (biltiNumber !== undefined) updatePayload.trackingBiltiNumber = biltiNumber;
   if (statusNote !== undefined) updatePayload.statusNote = statusNote;
+  if (carrier !== undefined) updatePayload.trackingCarrier = carrier;
 
   let resolvedUserId = userId;
   const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
   if (raw) {
-    const list: WholesaleOrder[] = JSON.parse(raw);
-    const idx = list.findIndex(o => o.id === orderId);
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...updatePayload };
-      if (!resolvedUserId) resolvedUserId = list[idx].userId;
-      localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+    try {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const idx = list.findIndex(o => o.id === orderId);
+      if (idx >= 0) {
+        if (!resolvedUserId) resolvedUserId = list[idx].userId;
+        if (!list[idx].trackingTicketId) {
+          updatePayload.trackingTicketId = `TRK-${(list[idx].orderNumber || '').replace(/[^0-9]/g, '') || Math.floor(100000 + Math.random() * 900000)}`;
+        }
+        if (status === 'Delivery Attempted' && deliveryAttemptReason) {
+          const currentAttempts = list[idx].deliveryAttempts || [];
+          updatePayload.deliveryAttempts = [
+            ...currentAttempts,
+            {
+              attemptNumber: currentAttempts.length + 1,
+              date: Date.now(),
+              reason: deliveryAttemptReason,
+              note: statusNote
+            }
+          ];
+        }
+        // In-place exact update
+        list[idx] = { ...list[idx], ...updatePayload };
+        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+      }
+    } catch (e) {
+      console.warn(e);
     }
   }
 
@@ -625,38 +985,104 @@ export async function updateOrderStatus(
   } catch (e) {
     console.warn('Firestore status update note:', e);
   }
+
+  // Immediately notify all order subscribers
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('stardot_orders_updated'));
+  }
 }
 
-// Subscribe to Orders (Admin & User tracking)
+// Subscribe to Orders (Admin & User tracking) - strictly real orders, latest top
 export function subscribeToOrders(onUpdate: (orders: WholesaleOrder[]) => void) {
-  try {
-    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
-    if (raw) {
-      onUpdate(JSON.parse(raw));
+  const emitLocal = (): WholesaleOrder[] => {
+    try {
+      const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+      if (raw) {
+        const parsed: WholesaleOrder[] = JSON.parse(raw);
+        const valid = parsed
+          .filter(isValidRealOrder)
+          .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        if (valid.length > 0) {
+          onUpdate(valid);
+        }
+        return valid;
+      }
+    } catch (e) {
+      console.warn(e);
     }
-  } catch (e) {
-    console.warn(e);
+    return [];
+  };
+
+  // 1. Emit local immediately
+  emitLocal();
+
+  // 2. Listen to custom event for instantaneous local updates
+  const handleLocalUpdate = () => {
+    emitLocal();
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('stardot_orders_updated', handleLocalUpdate);
   }
 
+  // 3. Listen to Firebase Realtime Database
   try {
     const ordersRef = ref(rtdb, 'wholesale_orders');
-    return onValue(ordersRef, (snapshot) => {
+    const unsub = onValue(ordersRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         const orderList: WholesaleOrder[] = [];
         Object.keys(data).forEach(key => {
-          if (data[key]) orderList.push(data[key]);
+          const item = data[key];
+          if (isValidRealOrder(item)) {
+            orderList.push({
+              ...item,
+              id: item.id || key,
+              createdAt: item.createdAt || Date.now()
+            });
+          }
         });
-        orderList.sort((a, b) => b.createdAt - a.createdAt);
-        if (orderList.length > 0) {
-          localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(orderList));
-          onUpdate(orderList);
+
+        // Merge with local orders so newly placed orders are never dropped
+        try {
+          const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+          if (raw) {
+            const localList: WholesaleOrder[] = JSON.parse(raw);
+            localList.forEach(localOrd => {
+              if (isValidRealOrder(localOrd) && !orderList.some(o => o.id === localOrd.id)) {
+                orderList.push(localOrd);
+              }
+            });
+          }
+        } catch {}
+
+        orderList.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(orderList));
+        onUpdate(orderList);
+      } else {
+        // If RTDB data is empty/null, DO NOT wipe valid local orders!
+        const local = emitLocal();
+        if (local.length > 0) {
+          // Push local orders to RTDB
+          for (const ord of local) {
+            set(ref(rtdb, `wholesale_orders/${ord.id}`), ord).catch(() => {});
+          }
         }
       }
     });
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('stardot_orders_updated', handleLocalUpdate);
+      }
+      if (typeof unsub === 'function') unsub();
+    };
   } catch (err) {
     console.warn('Orders subscribe notice:', err);
-    return () => {};
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('stardot_orders_updated', handleLocalUpdate);
+      }
+    };
   }
 }
 
@@ -771,14 +1197,16 @@ export async function loginUser(
           u && 
           (u.email?.toLowerCase() === cleanId || u.phone?.replace(/\s+/g, '') === cleanId.replace(/\s+/g, ''))
         ) {
+          const isAdmin = isUserAdmin(u);
           const matchedUser: WholesaleUser = {
             uid: u.uid || key,
             name: u.name || 'Valued Trader',
             email: u.email || cleanId,
             phone: u.phone || '+91 98000 00000',
-            role: (u.role as 'user' | 'admin') || 'user',
+            role: isAdmin ? 'admin' : (u.role || 'user'),
             companyName: u.companyName || 'Retail Partner'
           };
+          saveCurrentUser(matchedUser);
           return { user: matchedUser };
         }
       }
@@ -884,5 +1312,280 @@ export function subscribeToFooterInfo(onUpdate: (info: CompanyFooterInfo) => voi
   } catch (e) {
     console.warn('Footer info subscribe notice:', e);
     return () => {};
+  }
+}
+
+// -------------------------------------------------------------
+// PAYMENT GATEWAY & DELIVERY CHARGE SETTINGS
+// -------------------------------------------------------------
+const LOCAL_PAYMENT_SETTINGS_KEY = 'stardot_payment_settings_v1';
+
+export function getLocalPaymentSettings(): PaymentSettings {
+  try {
+    const raw = localStorage.getItem(LOCAL_PAYMENT_SETTINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...DEFAULT_PAYMENT_SETTINGS, ...parsed };
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+  return DEFAULT_PAYMENT_SETTINGS;
+}
+
+export function saveLocalPaymentSettings(settings: PaymentSettings) {
+  try {
+    localStorage.setItem(LOCAL_PAYMENT_SETTINGS_KEY, JSON.stringify(settings));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+export async function savePaymentSettings(settings: PaymentSettings): Promise<void> {
+  saveLocalPaymentSettings(settings);
+  try {
+    await set(ref(rtdb, 'settings/payment_gateway'), settings);
+  } catch (err) {
+    console.warn('RTDB payment settings save note:', err);
+  }
+  try {
+    await setDoc(doc(db, 'settings', 'payment_gateway'), settings);
+  } catch (err) {
+    console.warn('Firestore payment settings save note:', err);
+  }
+}
+
+export function subscribeToPaymentSettings(onUpdate: (settings: PaymentSettings) => void): () => void {
+  const initial = getLocalPaymentSettings();
+  onUpdate(initial);
+
+  try {
+    const settingsRef = ref(rtdb, 'settings/payment_gateway');
+    const unsub = onValue(settingsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const merged: PaymentSettings = { ...DEFAULT_PAYMENT_SETTINGS, ...data };
+        saveLocalPaymentSettings(merged);
+        onUpdate(merged);
+      }
+    });
+    return () => {
+      if (typeof unsub === 'function') unsub();
+    };
+  } catch (e) {
+    console.warn('Payment settings subscribe notice:', e);
+    return () => {};
+  }
+}
+
+// -------------------------------------------------------------
+// ORDER PAYMENT & UTR SUBMISSION / VERIFICATION
+// -------------------------------------------------------------
+
+// User submits UTR / Transaction ID after scanning QR
+export async function submitOrderPaymentUtr(
+  orderId: string, 
+  utr: string, 
+  paidAmount: number, 
+  userId?: string
+): Promise<void> {
+  const cleanUtr = utr.trim();
+  let ticketId: string | undefined;
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const cur = list.find(o => o.id === orderId);
+      ticketId = cur?.trackingTicketId || `TRK-${(cur?.orderNumber || '').replace(/[^0-9]/g, '') || Math.floor(100000 + Math.random() * 900000)}`;
+    }
+  } catch (e) {}
+  if (!ticketId) {
+    ticketId = `TRK-${Math.floor(100000 + Math.random() * 900000)}`;
+  }
+
+  const patch: Partial<WholesaleOrder> = {
+    trackingTicketId: ticketId,
+    paymentUtr: cleanUtr,
+    paidAmount,
+    paymentStatus: 'Payment Verification',
+    status: 'Payment Verification',
+    trackingStep: 1,
+    utrResubmitAllowed: false,
+    updatedAt: Date.now(),
+    statusNote: `Payment verification submitted. UTR: ${cleanUtr} (₹${paidAmount}). Tracking Ticket #${ticketId} created. Pending accounts desk verification.`
+  };
+
+  // 1. LocalStorage
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const idx = list.findIndex(o => o.id === orderId);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...patch };
+        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+      }
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+
+  // 2. RTDB
+  try {
+    await update(ref(rtdb, `wholesale_orders/${orderId}`), patch);
+    if (userId) {
+      await update(ref(rtdb, `user_orders/${userId}/${orderId}`), patch);
+    }
+  } catch (e) {
+    console.warn('RTDB UTR submit note:', e);
+  }
+
+  // 3. Firestore
+  try {
+    await setDoc(doc(db, ORDERS_COLLECTION, orderId), patch, { merge: true });
+    if (userId) {
+      await setDoc(doc(db, USERS_COLLECTION, userId, 'orders', orderId), patch, { merge: true });
+    }
+  } catch (e) {
+    console.warn('Firestore UTR submit note:', e);
+  }
+
+  // Immediately notify all order subscribers
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event('stardot_orders_updated'));
+  }
+}
+
+// Admin accepts payment -> moves status to Confirmed (Step 2)
+export async function acceptOrderPayment(
+  orderId: string, 
+  userId?: string, 
+  trackingBilti?: string,
+  carrier?: string
+): Promise<void> {
+  const patch: Partial<WholesaleOrder> = {
+    paymentStatus: 'Paid',
+    status: 'Confirmed',
+    trackingStep: 2,
+    utrResubmitAllowed: false,
+    updatedAt: Date.now(),
+    statusNote: 'Payment verified successfully! Order confirmed and queued for Tirupur/Surat mill packing.'
+  };
+  if (trackingBilti) patch.trackingBiltiNumber = trackingBilti;
+  if (carrier) patch.trackingCarrier = carrier;
+
+  // LocalStorage
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const idx = list.findIndex(o => o.id === orderId);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...patch };
+        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+      }
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+
+  // RTDB & Firestore
+  try {
+    await update(ref(rtdb, `wholesale_orders/${orderId}`), patch);
+    if (userId) {
+      await update(ref(rtdb, `user_orders/${userId}/${orderId}`), patch);
+    }
+    await setDoc(doc(db, ORDERS_COLLECTION, orderId), patch, { merge: true });
+    if (userId) {
+      await setDoc(doc(db, USERS_COLLECTION, userId, 'orders', orderId), patch, { merge: true });
+    }
+  } catch (e) {
+    console.warn('Accept payment sync note:', e);
+  }
+}
+
+// Admin rejects payment or requests new UTR from user
+export async function rejectOrderPayment(
+  orderId: string, 
+  reason: string, 
+  allowUtrResubmit: boolean = true, 
+  userId?: string
+): Promise<void> {
+  const patch: Partial<WholesaleOrder> = {
+    paymentStatus: allowUtrResubmit ? 'UTR Resubmit Requested' : 'Payment Failed',
+    paymentErrorNote: reason.trim(),
+    utrResubmitAllowed: allowUtrResubmit,
+    statusNote: `Payment verification issue: ${reason.trim()}. ${allowUtrResubmit ? 'Please submit your correct UTR in your profile.' : 'Please contact support.'}`,
+    updatedAt: Date.now()
+  };
+
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const idx = list.findIndex(o => o.id === orderId);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...patch };
+        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+      }
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+
+  try {
+    await update(ref(rtdb, `wholesale_orders/${orderId}`), patch);
+    if (userId) {
+      await update(ref(rtdb, `user_orders/${userId}/${orderId}`), patch);
+    }
+    await setDoc(doc(db, ORDERS_COLLECTION, orderId), patch, { merge: true });
+    if (userId) {
+      await setDoc(doc(db, USERS_COLLECTION, userId, 'orders', orderId), patch, { merge: true });
+    }
+  } catch (e) {
+    console.warn('Reject payment sync note:', e);
+  }
+}
+
+// Update shipment delivery tracking info
+export async function updateOrderTracking(
+  orderId: string,
+  trackingBilti: string,
+  carrier?: string,
+  note?: string,
+  userId?: string
+): Promise<void> {
+  const patch: Partial<WholesaleOrder> = {
+    trackingBiltiNumber: trackingBilti.trim(),
+    updatedAt: Date.now()
+  };
+  if (carrier) patch.trackingCarrier = carrier.trim();
+  if (note) patch.statusNote = note.trim();
+
+  try {
+    const raw = localStorage.getItem(LOCAL_ORDERS_KEY);
+    if (raw) {
+      const list: WholesaleOrder[] = JSON.parse(raw);
+      const idx = list.findIndex(o => o.id === orderId);
+      if (idx >= 0) {
+        list[idx] = { ...list[idx], ...patch };
+        localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+      }
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+
+  try {
+    await update(ref(rtdb, `wholesale_orders/${orderId}`), patch);
+    if (userId) {
+      await update(ref(rtdb, `user_orders/${userId}/${orderId}`), patch);
+    }
+    await setDoc(doc(db, ORDERS_COLLECTION, orderId), patch, { merge: true });
+    if (userId) {
+      await setDoc(doc(db, USERS_COLLECTION, userId, 'orders', orderId), patch, { merge: true });
+    }
+  } catch (e) {
+    console.warn('Update tracking sync note:', e);
   }
 }
