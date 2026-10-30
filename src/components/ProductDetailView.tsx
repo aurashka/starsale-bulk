@@ -12,10 +12,14 @@ import {
   TrendingDown,
   CheckCircle2,
   Check,
-  Layers
+  Layers,
+  Copy,
+  Banknote,
+  AlertCircle
 } from 'lucide-react';
 import { Product } from '../types.ts';
 import { formatPrice } from '../utils/format.ts';
+import { getProductShortCode, copyProductShareLink, getWhatsAppShareUrl } from '../utils/productCode.ts';
 
 interface ProductDetailViewProps {
   product: Product;
@@ -39,6 +43,9 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
   const [selectedColor, setSelectedColor] = useState(product?.colors?.[0] || 'Standard');
   const [quantity, setQuantity] = useState(product?.moq || 10);
   const [copiedLink, setCopiedLink] = useState(false);
+  const shortCode = getProductShortCode(product);
+  const isOutOfStock = Boolean(product?.isOutOfStock || (typeof product?.stock === 'number' && product.stock <= 0));
+  const isCodAvailable = product?.codAvailable !== false;
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -76,10 +83,19 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
     setActiveImageIdx((prev) => (prev - 1 + product.images.length) % product.images.length);
   };
 
-  const handleShare = () => {
-    navigator.clipboard?.writeText(window.location.href);
+  const handleShare = async () => {
+    const url = await copyProductShareLink(product);
     setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    setTimeout(() => setCopiedLink(false), 2500);
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: product.name,
+          text: `Check out ${product.name} (Product ID: #${shortCode})`,
+          url: url
+        });
+      } catch {}
+    }
   };
 
   return (
@@ -98,6 +114,18 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
+          {/* 6-Character Unique ID Pill */}
+          <button
+            type="button"
+            onClick={handleShare}
+            className="flex items-center gap-1.5 bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 px-3 py-1.5 rounded-full transition-colors font-mono text-xs font-bold text-neutral-800 shadow-2xs"
+            title="Click to copy direct product link"
+          >
+            <span className="text-[10px] uppercase text-neutral-500 font-sans font-bold">ID:</span>
+            <span className="text-red-800 font-black">#{shortCode}</span>
+            <Copy className="w-3.5 h-3.5 text-neutral-500" />
+          </button>
+
           <button
             onClick={handleShare}
             className="w-9 h-9 rounded-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 flex items-center justify-center transition-colors"
@@ -118,8 +146,8 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
       </div>
 
       {copiedLink && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white text-xs px-4 py-2 rounded-full shadow-lg font-bold">
-          Product link copied to clipboard!
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white text-xs px-4 py-2 rounded-full shadow-lg font-bold flex items-center gap-2 animate-in fade-in">
+          <span>Product link copied with ID #{shortCode}!</span>
         </div>
       )}
 
@@ -196,15 +224,52 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
             
             {/* Header info */}
             <div>
-              <div className="flex items-center gap-2 text-xs font-mono text-neutral-500 mb-1">
+              <div className="flex items-center gap-2 text-xs font-mono text-neutral-500 mb-1 flex-wrap">
                 <span>Category: <strong className="text-neutral-800">{product.category}</strong></span>
                 <span>•</span>
                 <span>SKU: <strong className="text-neutral-800">{product.sku}</strong></span>
+                <span>•</span>
+                <span className="bg-red-50 text-red-800 border border-red-200 px-2 py-0.5 rounded-md font-bold text-[11px]">
+                  ID: #{shortCode}
+                </span>
               </div>
 
               <h1 className="text-2xl sm:text-3xl font-black text-neutral-900 font-heading leading-tight">
                 {product.name}
               </h1>
+
+              {/* Direct 6-Character Link Sharing Banner */}
+              <div className="mt-2.5 p-3 bg-neutral-50 border border-neutral-200 rounded-2xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[10px] font-bold uppercase text-neutral-500 tracking-wider">Share Code:</span>
+                  <span className="font-mono font-black text-xs text-red-800 bg-white border border-red-200 px-2.5 py-0.5 rounded-md shadow-2xs">
+                    #{shortCode}
+                  </span>
+                  <span className="text-[11px] text-neutral-400 font-mono hidden sm:inline">
+                    ?p={shortCode}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 ml-auto">
+                  <button
+                    type="button"
+                    onClick={handleShare}
+                    className="px-3 py-1.5 bg-neutral-900 hover:bg-black text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all shadow-2xs active:scale-95"
+                    title="Copy direct share link with 6-char ID"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{copiedLink ? 'Copied!' : 'Copy Link'}</span>
+                  </button>
+                  <a
+                    href={getWhatsAppShareUrl(product)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 transition-all shadow-2xs active:scale-95"
+                    title="Share on WhatsApp"
+                  >
+                    <span>WhatsApp</span>
+                  </a>
+                </div>
+              </div>
 
               {/* Base Price & In-Stock Status */}
               <div className="flex items-baseline justify-between mt-3 pt-3 border-t border-neutral-200">
@@ -295,7 +360,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                   return (
                     <div
                       key={idx}
-                      onClick={() => setQuantity(tier.minQty)}
+                      onClick={() => setQuantity(Math.max(product.moq || 1, tier.minQty))}
                       className={`p-3 rounded-2xl border text-center transition-all cursor-pointer ${
                         isCurrentTier 
                           ? 'border-red-800 bg-red-800 text-white shadow-md' 
@@ -374,7 +439,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         </div>
       </div>
 
-      {/* FLOATING PERSISTENT BOTTOM BUY BAR (As requested: "buy ka button float karta rahe bottom me kewal product view me simple rakhe") */}
+      {/* FLOATING PERSISTENT BOTTOM BUY BAR */}
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-neutral-200 px-4 sm:px-8 py-3.5 shadow-2xl">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-6">
           
@@ -382,26 +447,40 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
           <div className="flex items-center gap-3">
             <div className="flex items-center border border-neutral-300 rounded-full bg-white px-2 py-1 shadow-inner">
               <button
-                onClick={() => setQuantity(Math.max(product.moq, quantity - 5))}
-                className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
-                disabled={quantity <= product.moq}
+                onClick={() => {
+                  const minMoq = product.moq || 1;
+                  const step = (quantity - minMoq >= 5) ? 5 : 1;
+                  setQuantity(Math.max(minMoq, quantity - step));
+                }}
+                className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base disabled:opacity-30 disabled:cursor-not-allowed"
+                disabled={quantity <= (product.moq || 1)}
+                title={quantity <= (product.moq || 1) ? `Minimum order is ${product.moq || 1} pcs` : 'Decrease'}
               >
                 -
               </button>
               <input
                 type="number"
-                min={product.moq}
+                min={product.moq || 1}
                 max={product.stock}
                 value={quantity}
                 onChange={(e) => {
-                  const val = parseInt(e.target.value) || product.moq;
-                  setQuantity(Math.max(product.moq, Math.min(product.stock, val)));
+                  const val = parseInt(e.target.value);
+                  if (!isNaN(val)) {
+                    setQuantity(Math.min(product.stock, val));
+                  }
+                }}
+                onBlur={() => {
+                  const minMoq = product.moq || 1;
+                  if (quantity < minMoq) {
+                    setQuantity(minMoq);
+                  }
                 }}
                 className="w-14 text-center font-black text-sm text-neutral-900 focus:outline-none"
               />
               <button
                 onClick={() => setQuantity(Math.min(product.stock, quantity + 5))}
                 className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
+                title="Increase"
               >
                 +
               </button>
@@ -426,7 +505,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
           {/* Action Buttons: White / Darkish Red */}
           <div className="flex items-center gap-2 sm:gap-3">
             <button
-              onClick={() => onAddToCart(product, selectedSize, selectedColor, quantity, currentUnitPrice)}
+              onClick={() => {
+                const safeQty = Math.max(product.moq || 1, quantity);
+                onAddToCart(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+              }}
               className="py-3 px-4 sm:px-6 bg-white border-2 border-neutral-900 text-neutral-900 hover:bg-neutral-100 font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center gap-1.5"
             >
               <ShoppingBag className="w-4 h-4 text-red-800" />
@@ -435,7 +517,10 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
             </button>
 
             <button
-              onClick={() => onDirectOrderNow(product, selectedSize, selectedColor, quantity, currentUnitPrice)}
+              onClick={() => {
+                const safeQty = Math.max(product.moq || 1, quantity);
+                onDirectOrderNow(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+              }}
               className="py-3 px-6 sm:px-8 bg-red-800 hover:bg-red-900 text-white font-black text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center gap-2 shadow-lg"
             >
               <Zap className="w-4 h-4 text-red-200" />

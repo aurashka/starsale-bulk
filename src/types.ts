@@ -52,6 +52,7 @@ export interface HeroSlide {
 
 export interface Product {
   id: string;
+  shortCode?: string; // Short 6-character unique ID for easy sharing (e.g. "K7X9PQ")
   name: string;
   category: string;
   subCategory?: string;
@@ -59,6 +60,8 @@ export interface Product {
   basePrice: number; // Base Wholesale Price in INR (₹)
   moq: number; // Minimum Order Quantity in pcs (e.g. 10 pcs, 25 pcs)
   stock: number;
+  isOutOfStock?: boolean; // When true, dims in catalog and disables ordering
+  codAvailable?: boolean; // Cash on delivery availability (default: true)
   description: string;
   material: string; // e.g. "100% Combed Heavy Cotton (240 GSM)"
   colors: string[];

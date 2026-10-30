@@ -33,6 +33,7 @@ import {
   saveCurrentUser
 } from './services/dataService.ts';
 import { INITIAL_CATEGORIES } from './data/defaultProducts.ts';
+import { getProductShortCode } from './utils/productCode.ts';
 
 export default function App() {
   // Products state
@@ -84,14 +85,15 @@ export default function App() {
     setIsAdminLoggedIn(isMasterAdmin);
     if (!isMasterAdmin) {
       sessionStorage.removeItem('stardot_admin_auth');
+      setIsAdminPanelOpen(false);
     } else {
       sessionStorage.setItem('stardot_admin_auth', 'true');
     }
   }, [currentUser]);
 
-  // Real-time synchronization of current user from Firebase Realtime Database:
-  // When an admin edits the user in Firebase Console (e.g. changing role to 'admin'),
-  // this listener immediately reflects the change in the web app without requiring page refresh!
+  // Real-time synchronization of current user from Firebase Realtime Database & Firestore:
+  // When an admin edits the user in Firebase Console (e.g. changing role to 'admin' or 'user'),
+  // this listener immediately reflects the change in the web app live without requiring page refresh!
   useEffect(() => {
     const unsubUser = subscribeToCurrentUser(currentUser, (freshUser) => {
       setCurrentUser(freshUser);
@@ -99,7 +101,7 @@ export default function App() {
     return () => {
       if (typeof unsubUser === 'function') unsubUser();
     };
-  }, [currentUser?.uid]);
+  }, [currentUser?.uid, currentUser?.phone, currentUser?.email]);
 
   // Cart state
   const [cartItems, setCartItems] = useState<CartItem[]>(() => {
@@ -166,6 +168,74 @@ export default function App() {
     saveWishlist(wishlistIds);
   }, [wishlistIds]);
 
+  // Deep-linking: Automatically open product when page is loaded with 6-character short code (?p=CODE or #p=CODE)
+  useEffect(() => {
+    if (products.length === 0) return;
+
+    const syncProductFromUrl = () => {
+      try {
+        const searchParams = new URLSearchParams(window.location.search);
+        let code = searchParams.get('p') || searchParams.get('id') || searchParams.get('prod');
+
+        if (!code && window.location.hash) {
+          const h = window.location.hash.replace('#', '');
+          if (h.startsWith('p=')) {
+            code = h.slice(2);
+          } else if (h.includes('p=')) {
+            const parsed = new URLSearchParams(h.includes('?') ? h.split('?')[1] : h);
+            code = parsed.get('p');
+          } else if (h.length >= 4 && h.length <= 10) {
+            code = h;
+          }
+        }
+
+        if (code) {
+          const target = code.trim().toUpperCase();
+          const found = products.find(p => 
+            (p.shortCode && p.shortCode.toUpperCase() === target) ||
+            getProductShortCode(p).toUpperCase() === target ||
+            p.id.toUpperCase() === target ||
+            p.sku.toUpperCase() === target
+          );
+          if (found) {
+            setSelectedProduct(found);
+          }
+        }
+      } catch (e) {
+        console.error('Error parsing product from URL:', e);
+      }
+    };
+
+    syncProductFromUrl();
+    window.addEventListener('popstate', syncProductFromUrl);
+    window.addEventListener('hashchange', syncProductFromUrl);
+    return () => {
+      window.removeEventListener('popstate', syncProductFromUrl);
+      window.removeEventListener('hashchange', syncProductFromUrl);
+    };
+  }, [products]);
+
+  // Handle selecting / closing product with clean URL update (?p=CODE)
+  const handleSelectProduct = (product: Product | null) => {
+    setSelectedProduct(product);
+    try {
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        if (product) {
+          const shortCode = getProductShortCode(product);
+          url.searchParams.set('p', shortCode);
+          window.history.replaceState(null, '', url.pathname + url.search);
+        } else {
+          url.searchParams.delete('p');
+          url.searchParams.delete('id');
+          url.searchParams.delete('prod');
+          const newSearch = url.searchParams.toString();
+          window.history.replaceState(null, '', url.pathname + (newSearch ? `?${newSearch}` : ''));
+        }
+      }
+    } catch {}
+  };
+
   // Cart handlers
   const handleAddToCart = (
     product: Product, 
@@ -174,6 +244,21 @@ export default function App() {
     quantity: number, 
     unitPrice: number
   ) => {
+    const minMoq = Math.max(1, product.moq || 1);
+    const safeQty = Math.max(minMoq, quantity);
+
+    // Recalculate price for this quantity
+    let initialUnitPrice = unitPrice;
+    if (product.bulkTiers && product.bulkTiers.length > 0) {
+      const sorted = [...product.bulkTiers].sort((a, b) => b.minQty - a.minQty);
+      for (const t of sorted) {
+        if (safeQty >= t.minQty) {
+          initialUnitPrice = t.unitPrice;
+          break;
+        }
+      }
+    }
+
     setCartItems(prev => {
       const existingIdx = prev.findIndex(
         item => item.product.id === product.id && 
@@ -183,11 +268,21 @@ export default function App() {
 
       if (existingIdx >= 0) {
         const updated = [...prev];
-        const newQty = updated[existingIdx].quantity + quantity;
+        const newQty = updated[existingIdx].quantity + safeQty;
+        let combinedPrice = initialUnitPrice;
+        if (product.bulkTiers && product.bulkTiers.length > 0) {
+          const sorted = [...product.bulkTiers].sort((a, b) => b.minQty - a.minQty);
+          for (const t of sorted) {
+            if (newQty >= t.minQty) {
+              combinedPrice = t.unitPrice;
+              break;
+            }
+          }
+        }
         updated[existingIdx] = {
           ...updated[existingIdx],
           quantity: newQty,
-          appliedUnitPrice: unitPrice
+          appliedUnitPrice: combinedPrice
         };
         return updated;
       } else {
@@ -195,8 +290,8 @@ export default function App() {
           product,
           selectedSize: size,
           selectedColor: color,
-          quantity,
-          appliedUnitPrice: unitPrice
+          quantity: safeQty,
+          appliedUnitPrice: initialUnitPrice
         }];
       }
     });
@@ -207,7 +302,7 @@ export default function App() {
   const handleQuickAdd = (product: Product) => {
     const defaultSize = product.sizes[0] || 'M';
     const defaultColor = product.colors[0] || 'Standard';
-    const moq = product.moq || 10;
+    const moq = Math.max(1, product.moq || 1);
     
     let unitPrice = product.basePrice;
     if (product.bulkTiers && product.bulkTiers.length > 0) {
@@ -225,7 +320,9 @@ export default function App() {
     quantity: number,
     unitPrice: number
   ) => {
-    handleAddToCart(product, size, color, quantity, unitPrice);
+    const minMoq = Math.max(1, product.moq || 1);
+    const safeQty = Math.max(minMoq, quantity);
+    handleAddToCart(product, size, color, safeQty, unitPrice);
     setIsCartOpen(true);
   };
 
@@ -234,11 +331,14 @@ export default function App() {
       const item = prev[index];
       if (!item) return prev;
 
+      const minMoq = Math.max(1, item.product.moq || 1);
+      const safeQty = Math.max(minMoq, newQty);
+
       let newUnitPrice = item.product.basePrice;
       if (item.product.bulkTiers && item.product.bulkTiers.length > 0) {
         const sorted = [...item.product.bulkTiers].sort((a, b) => b.minQty - a.minQty);
         for (const t of sorted) {
-          if (newQty >= t.minQty) {
+          if (safeQty >= t.minQty) {
             newUnitPrice = t.unitPrice;
             break;
           }
@@ -248,7 +348,7 @@ export default function App() {
       const copy = [...prev];
       copy[index] = {
         ...item,
-        quantity: newQty,
+        quantity: safeQty,
         appliedUnitPrice: newUnitPrice
       };
       return copy;
@@ -273,15 +373,13 @@ export default function App() {
 
   // Login handler with role separation
   const handleBuyerLoginSuccess = (user: WholesaleUser) => {
-    setCurrentUser(user);
-    localStorage.setItem('stardot_current_user', JSON.stringify(user));
-    if (user.role === 'admin') {
-      setIsAdminLoggedIn(true);
-      sessionStorage.setItem('stardot_admin_auth', 'true');
-    } else {
-      setIsAdminLoggedIn(false);
-      sessionStorage.removeItem('stardot_admin_auth');
-    }
+    const isAdmin = isUserAdmin(user);
+    const resolved: WholesaleUser = {
+      ...user,
+      role: isAdmin ? 'admin' : 'user'
+    };
+    setCurrentUser(resolved);
+    saveCurrentUser(resolved);
   };
 
   const handleBuyerSignOut = () => {
@@ -337,7 +435,7 @@ export default function App() {
       {selectedProduct ? (
         <ProductDetailView
           product={selectedProduct}
-          onBack={() => setSelectedProduct(null)}
+          onBack={() => handleSelectProduct(null)}
           isWishlisted={wishlistIds.includes(selectedProduct.id)}
           onToggleWishlist={handleToggleWishlist}
           onAddToCart={handleAddToCart}
@@ -366,7 +464,7 @@ export default function App() {
             <HeroBanner
               slides={heroSlides}
               products={products}
-              onSelectProduct={setSelectedProduct}
+              onSelectProduct={handleSelectProduct}
               onShopNow={(cat) => {
                 if (cat) setSelectedCategory(cat);
                 const el = document.getElementById('full-catalog');
@@ -394,7 +492,7 @@ export default function App() {
                 products={horizontalProducts}
                 wishlistIds={wishlistIds}
                 onToggleWishlist={handleToggleWishlist}
-                onSelectProduct={setSelectedProduct}
+                onSelectProduct={handleSelectProduct}
                 onQuickAdd={handleQuickAdd}
                 onViewAll={() => {
                   setSelectedCategory('all');
@@ -409,7 +507,7 @@ export default function App() {
               products={verticalProducts}
               wishlistIds={wishlistIds}
               onToggleWishlist={handleToggleWishlist}
-              onSelectProduct={setSelectedProduct}
+              onSelectProduct={handleSelectProduct}
               onQuickAdd={handleQuickAdd}
               selectedCategory={selectedCategory}
               searchQuery={searchQuery}
@@ -467,7 +565,7 @@ export default function App() {
           products={products}
           wishlistIds={wishlistIds}
           onToggleWishlist={handleToggleWishlist}
-          onSelectProduct={setSelectedProduct}
+          onSelectProduct={handleSelectProduct}
           onQuickAdd={handleQuickAdd}
         />
       )}

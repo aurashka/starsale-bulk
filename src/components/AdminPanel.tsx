@@ -37,7 +37,8 @@ import {
   QrCode,
   AlertCircle,
   Upload,
-  Copy
+  Copy,
+  Share2
 } from 'lucide-react';
 import { Product, WholesaleOrder, BulkTier, CategoryItem, ProductSpecCard, CompanyFooterInfo, HeroSlide, PaymentSettings } from '../types.ts';
 import { 
@@ -70,6 +71,7 @@ import {
 } from '../services/dataService.ts';
 import { SAMPLE_IMAGE_PRESETS, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES, DEFAULT_PAYMENT_SETTINGS } from '../data/defaultProducts.ts';
 import { formatPrice, formatDate } from '../utils/format.ts';
+import { getProductShortCode, generateNewShortCode, copyProductShareLink, getProductShareUrl } from '../utils/productCode.ts';
 
 interface AdminPanelProps {
   isOpen: boolean;
@@ -167,6 +169,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [showQuickAddCategory, setShowQuickAddCategory] = useState(false);
   const [quickCategoryInput, setQuickCategoryInput] = useState('');
   const [formSku, setFormSku] = useState('');
+  const [formShortCode, setFormShortCode] = useState('K7X9PQ');
+  const [copiedProdId, setCopiedProdId] = useState<string | null>(null);
   const [formBasePrice, setFormBasePrice] = useState(799);
   const [formMoq, setFormMoq] = useState(10);
   const [formStock, setFormStock] = useState(1000);
@@ -189,6 +193,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [formIsNew, setFormIsNew] = useState(true);
   const [formIsTrending, setFormIsTrending] = useState(false);
   const [formIsFeatured, setFormIsFeatured] = useState(false);
+  const [updatingMoqProdId, setUpdatingMoqProdId] = useState<string | null>(null);
 
   // Category Manager State
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -257,6 +262,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormName(prod.name);
     setFormCategory(prod.category);
     setFormSku(prod.sku);
+    setFormShortCode(getProductShortCode(prod));
     setFormBasePrice(prod.basePrice);
     setFormMoq(prod.moq);
     setFormStock(prod.stock);
@@ -296,6 +302,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormName('');
     setFormCategory(categories.find(c => c.id !== 'all')?.id || 'Sweaters');
     setFormSku(`STD-IN-${Math.floor(1000 + Math.random() * 9000)}`);
+    setFormShortCode(generateNewShortCode());
     setFormBasePrice(699);
     setFormMoq(10);
     setFormStock(1000);
@@ -340,14 +347,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     const targetId = editingProduct ? editingProduct.id : `prod-${Date.now()}`;
     const targetPlacement = formShowHorizontal && formShowVertical ? 'both' : formShowHorizontal ? 'horizontal' : 'vertical';
+    const safeMoq = Math.max(1, Number(formMoq) || 1);
+
+    // Sync MOQ into any spec card that displays Minimum Order
+    const updatedSpecCards = (formSpecCards || []).map(card => ({
+      ...card,
+      items: (card.items || []).map(item => {
+        if (item.label.toLowerCase().includes('moq') || item.label.toLowerCase().includes('minimum order')) {
+          return { ...item, value: `${safeMoq} pieces` };
+        }
+        return item;
+      })
+    }));
+
+    const safeShortCode = (formShortCode.trim() || generateNewShortCode()).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 
     const productToSave: Product = {
       id: targetId,
       name: formName || 'Unnamed Wholesale Style',
       category: formCategory,
       sku: formSku || `STD-IN-${Math.floor(1000 + Math.random() * 9000)}`,
+      shortCode: safeShortCode,
       basePrice: Number(formBasePrice),
-      moq: Number(formMoq),
+      moq: safeMoq,
       stock: Number(formStock),
       description: formDescription,
       material: formMaterial,
@@ -361,7 +383,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       displayPlacement: targetPlacement,
       sequence: editingProduct?.sequence || products.length + 1,
       bulkTiers: formTiers,
-      specCards: formSpecCards,
+      specCards: updatedSpecCards,
       isNew: formIsNew,
       isTrending: formIsTrending,
       isFeatured: formIsFeatured,
@@ -551,6 +573,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     onRefreshProducts();
     setStatusMessage(`Catalog sequence updated!`);
     setTimeout(() => setStatusMessage(null), 2500);
+  };
+
+  // Quick 1-Click MOQ Up/Down Updater directly from table
+  const handleQuickUpdateMoq = async (prod: Product, delta: number) => {
+    const currentMoq = prod.moq || 1;
+    const newMoq = Math.max(1, currentMoq + delta);
+    if (newMoq === currentMoq) return;
+
+    setUpdatingMoqProdId(prod.id);
+    try {
+      const updated: Product = {
+        ...prod,
+        moq: newMoq,
+        specCards: (prod.specCards || []).map(card => ({
+          ...card,
+          items: (card.items || []).map(item => {
+            if (item.label.toLowerCase().includes('moq') || item.label.toLowerCase().includes('minimum order')) {
+              return { ...item, value: `${newMoq} pieces` };
+            }
+            return item;
+          })
+        }))
+      };
+      await saveProduct(updated);
+      setStatusMessage(`MOQ for "${prod.name}" updated to ${newMoq} pcs in Firebase!`);
+      setTimeout(() => setStatusMessage(null), 3000);
+      onRefreshProducts();
+    } catch (err) {
+      console.error('Quick MOQ update error:', err);
+      setStatusMessage('Error updating MOQ.');
+      setTimeout(() => setStatusMessage(null), 3000);
+    } finally {
+      setUpdatingMoqProdId(null);
+    }
   };
 
   // Category Management Handlers
@@ -930,6 +986,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     />
                   </div>
 
+                  <div className="space-y-1 sm:col-span-2">
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-neutral-800 flex items-center gap-1.5">
+                        <span>Unique 6-Char Product ID *</span>
+                        <span className="text-[10px] text-red-800 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded font-bold">
+                          Direct Share Link ID
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setFormShortCode(generateNewShortCode())}
+                        className="text-[11px] font-bold text-red-800 hover:text-red-900 flex items-center gap-1"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Auto-Generate 6-Char ID</span>
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="relative flex-1">
+                        <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400 font-mono font-bold text-xs">#</span>
+                        <input
+                          required
+                          type="text"
+                          maxLength={8}
+                          value={formShortCode}
+                          onChange={(e) => setFormShortCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                          placeholder="K7X9PQ"
+                          className="w-full pl-8 pr-3.5 py-2.5 rounded-xl border border-neutral-300 focus:border-red-800 focus:outline-none font-mono font-bold uppercase tracking-wider text-sm bg-neutral-50/50"
+                        />
+                      </div>
+                      <div className="text-[11px] font-mono text-neutral-500 bg-neutral-100 border border-neutral-200 px-3 py-2.5 rounded-xl whitespace-nowrap hidden sm:block">
+                        Link: ?p={formShortCode || '...'}
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-neutral-500">
+                      Direct share link ke aage yeh 6-character unique ID show hoga (e.g. <span className="font-mono text-neutral-800 font-bold">?p={formShortCode || 'K7X9PQ'}</span>).
+                    </p>
+                  </div>
+
                   <div className="space-y-2 sm:col-span-2 pt-2 border-t border-neutral-100">
                     <label className="font-bold text-neutral-800 block text-xs">
                       Storefront List Placements (Selective Display) *
@@ -999,15 +1094,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
 
                   <div className="space-y-1">
-                    <label className="font-bold text-neutral-800">Minimum Order (MOQ pcs) *</label>
+                    <div className="flex items-center justify-between">
+                      <label className="font-bold text-neutral-800">Minimum Order (MOQ pcs) *</label>
+                      <span className="text-[10px] text-red-800 font-bold bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">
+                        Strict Min Limit
+                      </span>
+                    </div>
                     <input
                       required
                       type="number"
                       min="1"
                       value={formMoq}
-                      onChange={(e) => setFormMoq(parseInt(e.target.value) || 1)}
+                      onChange={(e) => setFormMoq(Math.max(1, parseInt(e.target.value) || 1))}
                       className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 focus:border-red-800 focus:outline-none font-extrabold text-red-800 text-sm"
                     />
+                    <p className="text-[10px] text-neutral-500">
+                      Buyers cannot order fewer than {formMoq} pieces of this product.
+                    </p>
                   </div>
 
                   <div className="space-y-1">
@@ -2033,6 +2136,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <span className="font-mono text-[10px] bg-neutral-100 text-neutral-600 px-2 py-0.5 rounded font-bold">
                           {prod.sku}
                         </span>
+                        <span className="font-mono text-[10px] bg-red-50 text-red-900 border border-red-200 px-2 py-0.5 rounded font-extrabold flex items-center gap-1" title="Direct Share Link ID">
+                          <span>ID:</span>
+                          <span>#{getProductShortCode(prod)}</span>
+                        </span>
                         {prod.isNew && (
                           <span className="text-[9px] font-bold uppercase bg-red-50 text-red-800 border border-red-200 px-1.5 py-0.5 rounded">
                             New
@@ -2066,7 +2173,38 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
 
                   {/* Right side actions and pricing */}
-                  <div className="flex items-center gap-4 justify-between md:justify-end pt-2 md:pt-0 border-t md:border-t-0 border-neutral-100">
+                  <div className="flex flex-wrap items-center gap-3 sm:gap-4 justify-between md:justify-end pt-2 md:pt-0 border-t md:border-t-0 border-neutral-100">
+                    {/* Quick Inline MOQ Adjuster */}
+                    <div className="flex items-center gap-1.5 bg-neutral-50 border border-neutral-200 px-2.5 py-1.5 rounded-xl shadow-2xs">
+                      <div className="flex flex-col">
+                        <span className="text-[9px] font-bold text-neutral-500 uppercase tracking-tight">MOQ</span>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            disabled={(prod.moq || 1) <= 1 || updatingMoqProdId === prod.id}
+                            onClick={() => handleQuickUpdateMoq(prod, (prod.moq || 1) > 5 ? -5 : -1)}
+                            className="w-5 h-5 rounded hover:bg-neutral-200 flex items-center justify-center font-bold text-neutral-700 text-xs disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                            title="Decrease MOQ"
+                          >
+                            -
+                          </button>
+                          <span className="font-mono font-black text-xs text-red-800 min-w-[32px] text-center">
+                            {updatingMoqProdId === prod.id ? '...' : `${prod.moq || 1}`}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={updatingMoqProdId === prod.id}
+                            onClick={() => handleQuickUpdateMoq(prod, 5)}
+                            className="w-5 h-5 rounded hover:bg-neutral-200 flex items-center justify-center font-bold text-neutral-700 text-xs transition-colors"
+                            title="Increase MOQ by 5 pcs"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                      <span className="text-[10px] text-neutral-400 font-medium">pcs</span>
+                    </div>
+
                     <div className="text-left md:text-right">
                       <span className="text-base font-black text-neutral-900 font-heading">
                         ₹{formatPrice(prod?.basePrice)}
@@ -2075,6 +2213,36 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </div>
 
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await copyProductShareLink(prod);
+                          setCopiedProdId(prod.id);
+                          setStatusMessage(`Direct share link copied with 6-char ID #${getProductShortCode(prod)}!`);
+                          setTimeout(() => {
+                            setCopiedProdId(null);
+                            setStatusMessage(null);
+                          }, 3000);
+                        }}
+                        className={`p-2.5 rounded-xl transition-colors flex items-center gap-1.5 text-xs font-bold ${
+                          copiedProdId === prod.id
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-700'
+                        }`}
+                        title={`Copy sharing link: ${getProductShareUrl(prod)}`}
+                      >
+                        {copiedProdId === prod.id ? (
+                          <>
+                            <Check className="w-4 h-4 text-white" />
+                            <span className="hidden sm:inline">Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <Share2 className="w-4 h-4" />
+                            <span className="hidden sm:inline">Share Link</span>
+                          </>
+                        )}
+                      </button>
                       <button
                         onClick={() => startEditProduct(prod)}
                         className="p-2.5 rounded-xl bg-neutral-100 hover:bg-neutral-200 text-neutral-700 transition-colors flex items-center gap-1.5 text-xs font-bold"

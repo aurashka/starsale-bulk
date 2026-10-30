@@ -10,10 +10,12 @@ import {
   ShoppingBag,
   Zap,
   TrendingDown,
-  CheckCircle2
+  CheckCircle2,
+  Copy
 } from 'lucide-react';
 import { Product } from '../types.ts';
 import { formatPrice } from '../utils/format.ts';
+import { getProductShortCode, copyProductShareLink } from '../utils/productCode.ts';
 
 interface ProductDetailModalProps {
   product: Product | null;
@@ -75,10 +77,21 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
     setActiveImageIdx((prev) => (prev - 1 + product.images.length) % product.images.length);
   };
 
-  const handleShare = () => {
-    navigator.clipboard?.writeText(window.location.href);
+  const shortCode = getProductShortCode(product);
+
+  const handleShare = async () => {
+    const url = await copyProductShareLink(product);
     setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    setTimeout(() => setCopiedLink(false), 2500);
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: product.name,
+          text: `Check out ${product.name} (Product ID: #${shortCode})`,
+          url: url
+        });
+      } catch {}
+    }
   };
 
   return (
@@ -103,11 +116,22 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
         <div className="w-full md:w-1/2 bg-[#f4f4f0] relative flex flex-col justify-between p-4 sm:p-6 overflow-hidden min-h-[380px] sm:min-h-[460px]">
           
           {/* Top image bar */}
-          <div className="flex items-center justify-between z-10">
-            <span className="text-[11px] font-mono tracking-wider uppercase text-neutral-700 bg-white/90 px-3 py-1 rounded-full font-bold shadow-xs">
-              SKU: {product.sku}
-            </span>
-            <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between z-10 flex-wrap gap-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-[11px] font-mono tracking-wider uppercase text-neutral-700 bg-white/90 px-2.5 py-0.5 rounded-full font-bold shadow-xs">
+                SKU: {product.sku}
+              </span>
+              <button
+                type="button"
+                onClick={handleShare}
+                className="text-[11px] font-mono tracking-wider uppercase text-red-800 bg-red-50 hover:bg-red-100 border border-red-200 px-2 py-0.5 rounded-full font-bold shadow-xs flex items-center gap-1 transition-colors"
+                title="Click to copy product link with 6-char ID"
+              >
+                <span>ID: #{shortCode}</span>
+                <Copy className="w-3 h-3 text-red-700" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5 ml-auto">
               <button
                 onClick={handleShare}
                 className="w-8 h-8 rounded-full bg-white/90 hover:bg-white text-neutral-700 flex items-center justify-center transition-colors shadow-xs"
@@ -188,8 +212,8 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
           </div>
 
           {copiedLink && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-neutral-900 text-yellow-300 text-xs px-3 py-1.5 rounded-full shadow-lg font-bold">
-              Product link copied to clipboard!
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-neutral-900 text-yellow-300 text-xs px-3.5 py-1.5 rounded-full shadow-lg font-bold flex items-center gap-1.5 animate-in fade-in z-20">
+              <span>Link copied with ID #{shortCode}!</span>
             </div>
           )}
         </div>
@@ -262,7 +286,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                   return (
                     <div
                       key={idx}
-                      onClick={() => setQuantity(tier.minQty)}
+                      onClick={() => setQuantity(Math.max(product.moq || 1, tier.minQty))}
                       className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer ${
                         isCurrentTier 
                           ? 'border-red-600 bg-red-600 text-white shadow-md' 
@@ -330,7 +354,7 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             {/* Interactive Quantity Stepper with Live Rupee Savings */}
             <div className="pt-2 border-t border-neutral-200">
               <div className="flex items-center justify-between text-xs mb-2">
-                <span className="font-bold text-neutral-900">Lot Quantity (MOQ: {product.moq} pcs):</span>
+                <span className="font-bold text-neutral-900">Lot Quantity (MOQ: {product.moq || 1} pcs):</span>
                 {savings > 0 && (
                   <span className="text-emerald-800 font-extrabold text-[11px] bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full">
                     Bulk Profit Saved: ₹{formatPrice(savings)}
@@ -341,26 +365,40 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               <div className="flex items-center gap-3">
                 <div className="flex items-center border border-neutral-300 rounded-full bg-white px-2 py-1 shadow-inner">
                   <button
-                    onClick={() => setQuantity(Math.max(product.moq, quantity - 5))}
-                    className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
-                    disabled={quantity <= product.moq}
+                    onClick={() => {
+                      const minMoq = product.moq || 1;
+                      const step = (quantity - minMoq >= 5) ? 5 : 1;
+                      setQuantity(Math.max(minMoq, quantity - step));
+                    }}
+                    className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled={quantity <= (product.moq || 1)}
+                    title={quantity <= (product.moq || 1) ? `Minimum order is ${product.moq || 1} pcs` : 'Decrease'}
                   >
                     -
                   </button>
                   <input
                     type="number"
-                    min={product.moq}
+                    min={product.moq || 1}
                     max={product.stock}
                     value={quantity}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value) || product.moq;
-                      setQuantity(Math.max(product.moq, Math.min(product.stock, val)));
+                      const val = parseInt(e.target.value);
+                      if (!isNaN(val)) {
+                        setQuantity(Math.min(product.stock, val));
+                      }
+                    }}
+                    onBlur={() => {
+                      const minMoq = product.moq || 1;
+                      if (quantity < minMoq) {
+                        setQuantity(minMoq);
+                      }
                     }}
                     className="w-16 text-center font-black text-sm text-neutral-900 focus:outline-none"
                   />
                   <button
                     onClick={() => setQuantity(Math.min(product.stock, quantity + 5))}
                     className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
+                    title="Increase"
                   >
                     +
                   </button>
@@ -379,7 +417,10 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
           {/* Action Buttons: Bold Red / Dark Theme */}
           <div className="pt-5 mt-4 border-t border-neutral-200 flex items-center gap-3">
             <button
-              onClick={() => onAddToCart(product, selectedSize, selectedColor, quantity, currentUnitPrice)}
+              onClick={() => {
+                const safeQty = Math.max(product.moq || 1, quantity);
+                onAddToCart(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+              }}
               className="flex-1 py-3.5 px-4 bg-white border-2 border-neutral-900 text-neutral-900 hover:bg-neutral-100 font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center justify-center gap-2"
             >
               <ShoppingBag className="w-4 h-4 text-red-600" />
@@ -387,7 +428,10 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
             </button>
 
             <button
-              onClick={() => onDirectOrderNow(product, selectedSize, selectedColor, quantity, currentUnitPrice)}
+              onClick={() => {
+                const safeQty = Math.max(product.moq || 1, quantity);
+                onDirectOrderNow(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+              }}
               className="flex-1 py-3.5 px-4 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg"
             >
               <Zap className="w-4 h-4 text-yellow-300" />

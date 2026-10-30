@@ -555,14 +555,19 @@ export function isValidRealOrder(ord: any): ord is WholesaleOrder {
 const DEVICE_USER_KEY = 'stardot_device_user_id';
 const CURRENT_USER_KEY = 'stardot_current_user';
 
-// Robust check if user has admin privileges (STRICT: role === 'admin')
+// Strict check if user has admin privileges
 export function isUserAdmin(user?: WholesaleUser | Partial<WholesaleUser> | null): boolean {
   if (!user) return false;
-  // Guest device users are strictly NOT admin
-  if (user.uid && user.uid.startsWith('dev_')) return false;
+  // Guest device users are strictly NOT admin unless explicitly granted
+  if (user.uid && user.uid.startsWith('dev_') && user.role !== 'admin') return false;
 
   const role = String(user.role || '').trim().toLowerCase();
-  return role === 'admin' || role === 'superadmin' || role === 'administrator';
+  if (role === 'admin' || role === 'superadmin' || role === 'administrator') return true;
+
+  // Master fallback only for explicit master admin UID
+  if (user.uid === 'admin-master-uid' && role !== 'user') return true;
+
+  return false;
 }
 
 export function saveCurrentUser(user: WholesaleUser) {
@@ -591,10 +596,8 @@ export function getCurrentStoredUser(): WholesaleUser | null {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (raw) {
       const u: WholesaleUser = JSON.parse(raw);
-      if (u.uid && u.uid.startsWith('dev_')) {
+      if (u.uid && u.uid.startsWith('dev_') && u.role !== 'admin') {
         u.role = 'user';
-      } else {
-        u.role = isUserAdmin(u) ? 'admin' : 'user';
       }
       return u;
     }
@@ -602,42 +605,100 @@ export function getCurrentStoredUser(): WholesaleUser | null {
   return null;
 }
 
-// Live real-time listener for current logged-in user's role from Firebase RTDB
+// Live real-time listener for current logged-in user's role from Firebase RTDB & Firestore:
+// - If role in Firebase is 'admin', admin buttons appear immediately (live).
+// - If role in Firebase is changed to 'user', admin buttons disappear immediately (live).
 export function subscribeToCurrentUser(
   currentUser: WholesaleUser | null,
   onUserUpdate: (updatedUser: WholesaleUser) => void
 ): () => void {
   if (!currentUser || !currentUser.uid) return () => {};
-  // Device/guest users are strictly role 'user' and do not listen for admin promotion
-  if (currentUser.uid.startsWith('dev_')) return () => {};
 
   let isMounted = true;
+  const cleanListeners: (() => void)[] = [];
 
-  // Listen ONLY to this authenticated user's node in Firebase Realtime Database
-  const userRef = ref(rtdb, `users/${currentUser.uid}`);
-  const unsubUser = onValue(userRef, (snapshot) => {
-    if (!isMounted) return;
-    const data = snapshot.val();
-    if (data && typeof data === 'object') {
-      const targetRole: 'admin' | 'user' = isUserAdmin(data) ? 'admin' : 'user';
-      const enriched: WholesaleUser = {
-        ...currentUser,
-        ...data,
-        uid: currentUser.uid,
-        role: targetRole
-      };
-      if (currentUser.role !== targetRole || currentUser.name !== data.name) {
+  const handleUserData = (userData: any, sourceKey?: string) => {
+    if (!isMounted || !userData || typeof userData !== 'object') return;
+    const current = getCurrentStoredUser() || currentUser;
+    if (!current) return;
+
+    const uPhone = String(userData.phone || '').replace(/\D/g, '').slice(-10);
+    const currPhone = String(current.phone || '').replace(/\D/g, '').slice(-10);
+    const uEmail = String(userData.email || '').trim().toLowerCase();
+    const currEmail = String(current.email || '').trim().toLowerCase();
+    const uUid = String(userData.uid || sourceKey || '').trim();
+
+    // STRICT MATCH: Only updates if UID matches, OR 10-digit mobile matches, OR verified email matches!
+    const isSameUser = Boolean(
+      (uUid && current.uid && uUid === current.uid) ||
+      (currPhone && uPhone && currPhone.length >= 10 && currPhone === uPhone) ||
+      (currEmail && uEmail && currEmail.includes('@') && currEmail === uEmail)
+    );
+
+    if (isSameUser) {
+      // Dynamic live role based on Firebase record:
+      // If Firebase role is 'admin', role becomes 'admin'.
+      // If Firebase role is 'user', role becomes 'user' and admin button disappears live!
+      const rawRole = String(userData.role || '').trim().toLowerCase();
+      const targetRole: 'admin' | 'user' = (rawRole === 'admin' || rawRole === 'superadmin' || rawRole === 'administrator')
+        ? 'admin'
+        : 'user';
+
+      if (current.role !== targetRole || current.name !== userData.name || (uUid && current.uid !== uUid)) {
+        const enriched: WholesaleUser = {
+          ...current,
+          ...userData,
+          uid: uUid || current.uid,
+          role: targetRole
+        };
         saveCurrentUser(enriched);
         onUserUpdate(enriched);
       }
     }
-  }, (err) => {
+  };
+
+  try {
+    // 1. Listen directly to user's UID node in Firebase Realtime Database
+    const userRef = ref(rtdb, `users/${currentUser.uid}`);
+    const unsubUser = onValue(userRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) handleUserData(data, currentUser.uid);
+    });
+    cleanListeners.push(() => {
+      if (typeof unsubUser === 'function') unsubUser();
+    });
+
+    // 2. Also listen to users collection in RTDB to catch live role edits from Firebase Console
+    const allUsersRef = ref(rtdb, 'users');
+    const unsubAll = onValue(allUsersRef, (snapshot) => {
+      const val = snapshot.val();
+      if (val && typeof val === 'object') {
+        Object.keys(val).forEach(k => {
+          handleUserData(val[k], k);
+        });
+      }
+    });
+    cleanListeners.push(() => {
+      if (typeof unsubAll === 'function') unsubAll();
+    });
+
+    // 3. Listen to Firestore user document in case role was updated in Firestore Console
+    const userDocRef = doc(db, USERS_COLLECTION, currentUser.uid);
+    const unsubFs = onSnapshot(userDocRef, (snap) => {
+      if (snap.exists()) {
+        handleUserData(snap.data(), currentUser.uid);
+      }
+    }, () => {});
+    cleanListeners.push(() => {
+      if (typeof unsubFs === 'function') unsubFs();
+    });
+  } catch (err) {
     console.warn('subscribeToCurrentUser RTDB error:', err);
-  });
+  }
 
   return () => {
     isMounted = false;
-    if (typeof unsubUser === 'function') unsubUser();
+    cleanListeners.forEach(c => c());
   };
 }
 
@@ -792,25 +853,68 @@ export async function autoRegisterOrLoginCheckoutUser(data: {
   gstin?: string;
 }): Promise<WholesaleUser> {
   const cleanPhone10 = (data.phone || '').replace(/\D/g, '').slice(-10);
-  const uid = cleanPhone10.length >= 10 ? `usr_${cleanPhone10}` : `usr_${Date.now()}`;
   const formattedPhone = cleanPhone10.length >= 10 ? `+91 ${cleanPhone10}` : data.phone.trim();
   const formattedEmail = (data.email && data.email.trim()) ? data.email.trim().toLowerCase() : `trader_${cleanPhone10 || 'buyer'}@stardot.in`;
   const name = data.name?.trim() || 'Trader Partner';
+
+  let uid = cleanPhone10.length >= 10 ? `usr_${cleanPhone10}` : `usr_${Date.now()}`;
+  let role: 'user' | 'admin' = 'user';
+
+  // 1. Check if current stored user is admin
+  const current = getCurrentStoredUser();
+  if (current && isUserAdmin(current)) {
+    uid = current.uid;
+    role = 'admin';
+  }
+
+  // 2. Check if phone or email matches an existing user in Firebase RTDB
+  try {
+    const snap = await get(ref(rtdb, 'users'));
+    if (snap.exists()) {
+      const allUsers = snap.val();
+      for (const k of Object.keys(allUsers)) {
+        const u = allUsers[k];
+        if (u) {
+          const uPhone = String(u.phone || '').replace(/\D/g, '').slice(-10);
+          const uEmail = String(u.email || '').trim().toLowerCase();
+          if (
+            (cleanPhone10 && uPhone === cleanPhone10) ||
+            (data.email && uEmail === data.email.trim().toLowerCase()) ||
+            (current && k === current.uid)
+          ) {
+            uid = u.uid || k;
+            if (isUserAdmin(u) || String(u.role || '').toLowerCase() === 'admin') {
+              role = 'admin';
+            }
+            break;
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Check RTDB user error:', err);
+  }
+
+  // 3. Fallback: Check if user has admin identifiers
+  if (isUserAdmin({ phone: formattedPhone, email: formattedEmail, uid })) {
+    role = 'admin';
+  }
 
   const userObj: WholesaleUser = {
     uid,
     name,
     phone: formattedPhone,
     email: formattedEmail,
-    role: 'user',
+    role,
     companyName: data.companyName?.trim() || 'Retail Partner',
     city: data.city?.trim() || 'Direct Godown',
     state: data.state?.trim() || 'India',
     gstin: data.gstin?.trim() || undefined
   };
 
+  saveCurrentUser(userObj);
+
   try {
-    localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(userObj));
     localStorage.setItem(DEVICE_USER_KEY, uid);
   } catch (e) {
     console.warn(e);
@@ -846,10 +950,6 @@ export async function autoRegisterOrLoginCheckoutUser(data: {
     }, { merge: true });
   } catch (err) {
     console.warn('Firestore user auto-save note:', err);
-  }
-
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('stardot_user_changed', { detail: userObj }));
   }
 
   return userObj;
