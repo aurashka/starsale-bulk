@@ -6,7 +6,7 @@ import {
   User as UserIcon, 
   X, 
   Lock, 
-  CheckCircle2 
+  CheckCircle2
 } from 'lucide-react';
 import { WholesaleUser } from '../types.ts';
 import { isUserAdmin } from '../services/dataService.ts';

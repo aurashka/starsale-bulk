@@ -13,6 +13,7 @@ import { UserProfileModal } from './components/UserProfileModal.tsx';
 import { AdminPanel } from './components/AdminPanel.tsx';
 import { Footer } from './components/Footer.tsx';
 import { MobileNav } from './components/MobileNav.tsx';
+import { SupportDrawer } from './components/SupportDrawer.tsx';
 
 import { PaymentGatewayModal } from './components/PaymentGatewayModal.tsx';
 import { Product, CartItem, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide, PaymentSettings, WholesaleOrder } from './types.ts';
@@ -30,7 +31,8 @@ import {
   subscribeToPaymentSettings,
   isUserAdmin,
   subscribeToCurrentUser,
-  saveCurrentUser
+  saveCurrentUser,
+  subscribeToOrders
 } from './services/dataService.ts';
 import { INITIAL_CATEGORIES } from './data/defaultProducts.ts';
 import { getProductShortCode } from './utils/productCode.ts';
@@ -53,10 +55,12 @@ export default function App() {
   const [isWishlistOpen, setIsWishlistOpen] = useState(false);
   const [isAuthOpen, setIsAuthOpen] = useState(false);
   const [isUserProfileOpen, setIsUserProfileOpen] = useState(false);
+  const [isSupportOpen, setIsSupportOpen] = useState(false);
   const [isAdminPanelOpen, setIsAdminPanelOpen] = useState(false);
   const [isPaymentGatewayOpen, setIsPaymentGatewayOpen] = useState(false);
   const [activePaymentOrder, setActivePaymentOrder] = useState<WholesaleOrder | null>(null);
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getLocalPaymentSettings());
+  const [allOrders, setAllOrders] = useState<WholesaleOrder[]>([]);
 
   // User state: Persistent device auto-login so guest orders are never lost across restarts
   const [currentUser, setCurrentUser] = useState<WholesaleUser | null>(() => {
@@ -150,12 +154,17 @@ export default function App() {
       setPaymentSettings(settings);
     });
 
+    const unsubOrders = subscribeToOrders((orders) => {
+      setAllOrders(orders);
+    });
+
     return () => {
       if (typeof unsubProducts === 'function') unsubProducts();
       if (typeof unsubCategories === 'function') unsubCategories();
       if (typeof unsubFooter === 'function') unsubFooter();
       if (typeof unsubHero === 'function') unsubHero();
       if (typeof unsubPayment === 'function') unsubPayment();
+      if (typeof unsubOrders === 'function') unsubOrders();
     };
   }, []);
 
@@ -594,10 +603,27 @@ export default function App() {
             setIsUserProfileOpen(false);
             setIsAdminPanelOpen(true);
           }}
+          onOpenSupport={() => {
+            setIsUserProfileOpen(false);
+            setIsSupportOpen(true);
+          }}
         />
       )}
 
-      
+      {/* Help & Support Desk Drawer (Live Chat & Tickets) */}
+      <SupportDrawer
+        isOpen={isSupportOpen}
+        onClose={() => setIsSupportOpen(false)}
+        currentUser={currentUser}
+        userOrders={allOrders.filter(o => {
+          if (!currentUser) return false;
+          const uPhone = (currentUser.phone || '').replace(/\D/g, '').slice(-10);
+          const oPhone = (o.phone || '').replace(/\D/g, '').slice(-10);
+          return (o.userId && o.userId === currentUser.uid) || (uPhone && oPhone && uPhone === oPhone);
+        })}
+        onOpenAuth={() => setIsAuthOpen(true)}
+      />
+
       {/* UPI Payment Gateway & Verification Modal */}
       {isPaymentGatewayOpen && activePaymentOrder && (
         <PaymentGatewayModal

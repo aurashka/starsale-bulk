@@ -29,7 +29,8 @@ import {
   Printer,
   Eye,
   Tag,
-  AlertCircle
+  AlertCircle,
+  Headphones
 } from 'lucide-react';
 import { WholesaleUser, WholesaleOrder } from '../types.ts';
 import { subscribeToOrders, submitOrderPaymentUtr, isUserAdmin } from '../services/dataService.ts';
@@ -42,6 +43,7 @@ interface UserProfileModalProps {
   onSignOut: () => void;
   onOpenAdmin?: () => void;
   onOpenPaymentGateway?: (order: WholesaleOrder) => void;
+  onOpenSupport?: () => void;
 }
 
 export const UserProfileModal: React.FC<UserProfileModalProps> = ({
@@ -50,7 +52,8 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   currentUser,
   onSignOut,
   onOpenAdmin,
-  onOpenPaymentGateway
+  onOpenPaymentGateway,
+  onOpenSupport
 }) => {
   const [userOrders, setUserOrders] = useState<WholesaleOrder[]>([]);
   const [activeTab, setActiveTab] = useState<'orders' | 'profile'>('orders');
@@ -224,6 +227,21 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onOpenSupport && (
+              <button 
+                onClick={() => {
+                  onClose();
+                  onOpenSupport();
+                }}
+                className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 border border-neutral-300"
+                title="Help & Support Desk (Active Chat & Tickets)"
+              >
+                <Headphones className="w-3.5 h-3.5 text-red-800" />
+                <span className="hidden sm:inline">Help & Support</span>
+                <span className="sm:hidden">Help</span>
+              </button>
+            )}
+
             {isUserAdmin(currentUser) && onOpenAdmin && (
               <button 
                 onClick={() => {
@@ -259,7 +277,14 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     {currentUser.name || 'Registered Trade Partner'}
                   </h2>
                   <span className="px-2 py-0.5 rounded-md bg-white text-red-900 text-[10px] font-black uppercase flex items-center gap-1 shadow-xs">
-                    {isUserAdmin(currentUser) ? '👑 Master Admin' : 'B2B Trade Buyer'}
+                    {isUserAdmin(currentUser) ? (
+                      <>
+                        <ShieldCheck className="w-3 h-3 text-red-800" />
+                        <span>Master Admin</span>
+                      </>
+                    ) : (
+                      'B2B Trade Buyer'
+                    )}
                   </span>
                   <span className="px-2 py-0.5 rounded-md bg-black/30 text-white font-mono text-[10px] font-bold border border-white/20">
                     ID: {currentUser.uid}
@@ -277,7 +302,21 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-start sm:self-auto">
+            <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+              {onOpenSupport && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenSupport();
+                  }}
+                  className="px-3 py-1.5 bg-white text-red-900 hover:bg-red-50 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors shadow-sm active:scale-95"
+                  title="Open Factory Help Desk, FAQs & Support Tickets"
+                >
+                  <Headphones className="w-3.5 h-3.5 text-red-800" />
+                  <span>Help & FAQ</span>
+                </button>
+              )}
               <button
                 onClick={onSignOut}
                 className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors border border-white/20"
@@ -311,7 +350,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
 
         {/* Tab Selection */}
         <div className="bg-white border-b border-neutral-200 px-4 sm:px-8 py-2.5 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setActiveTab('orders')}
               className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
@@ -333,8 +372,22 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
               }`}
             >
               <Building2 className="w-3.5 h-3.5" />
-              <span>Business Account</span>
+              <span>Trader Profile</span>
             </button>
+
+            {onOpenSupport && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenSupport();
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 bg-neutral-100 text-neutral-700 hover:bg-neutral-200 hover:text-red-800"
+                title="Open Factory Help Desk, FAQs & Support Tickets"
+              >
+                <Headphones className="w-3.5 h-3.5 text-red-800" />
+                <span>Help & FAQs</span>
+              </button>
+            )}
           </div>
 
           <div className="text-[11px] text-neutral-500 hidden sm:block">

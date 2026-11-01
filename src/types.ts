@@ -173,3 +173,32 @@ export interface WholesaleUser {
   state?: string;
   gstin?: string;
 }
+
+export interface TicketMessage {
+  id: string;
+  sender: 'user' | 'admin';
+  senderName: string;
+  text: string;
+  timestamp: number;
+}
+
+export interface SupportTicket {
+  id: string; // e.g. "TCK-109283"
+  userId: string;
+  userName: string;
+  userEmail?: string;
+  userPhone?: string;
+  subject: string;
+  orderId?: string; // Optional wholesale order reference
+  category: 'Order Status' | 'Payment Issue' | 'Product Inquiry' | 'Delivery & Transport' | 'Other';
+  status: 'new' | 'active' | 'closed'; // 'new': unread by admin, 'active': in progress chat, 'closed': resolved
+  unreadByUser?: boolean;
+  unreadByAdmin?: boolean;
+  messages: TicketMessage[];
+  rating?: number; // 1 to 5 stars (optional on closed ticket)
+  feedback?: string; // optional user feedback text
+  feedbackSubmittedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+  closedAt?: number;
+}

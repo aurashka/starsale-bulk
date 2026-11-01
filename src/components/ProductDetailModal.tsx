@@ -11,7 +11,9 @@ import {
   Zap,
   TrendingDown,
   CheckCircle2,
-  Copy
+  Copy,
+  Banknote,
+  AlertCircle
 } from 'lucide-react';
 import { Product } from '../types.ts';
 import { formatPrice } from '../utils/format.ts';
@@ -78,6 +80,8 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   };
 
   const shortCode = getProductShortCode(product);
+  const isOutOfStock = Boolean(product?.isOutOfStock || (typeof product?.stock === 'number' && product.stock <= 0));
+  const isCodAvailable = product?.codAvailable !== false;
 
   const handleShare = async () => {
     const url = await copyProductShareLink(product);
@@ -224,13 +228,28 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
           <div className="space-y-4">
             
             {/* Header / Badges */}
-            <div className="flex items-center justify-between">
-              <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[11px] font-black tracking-wide uppercase border border-amber-200">
-                {product.isNew ? 'New Wholesale Lot' : 'Certified Bulk Lot'}
-              </span>
-              <span className="text-xs font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md font-bold border border-emerald-200">
-                In Stock: {product.stock} pcs
-              </span>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 text-[11px] font-black tracking-wide uppercase border border-amber-200">
+                  {product.isNew ? 'New Wholesale Lot' : 'Certified Bulk Lot'}
+                </span>
+                {isCodAvailable && (
+                  <span className="px-2.5 py-0.5 rounded-full bg-white text-neutral-800 text-[11px] font-bold border border-neutral-300 shadow-2xs flex items-center gap-1">
+                    <Banknote className="w-3.5 h-3.5 text-neutral-800" />
+                    <span>Cash on Delivery</span>
+                  </span>
+                )}
+              </div>
+              {isOutOfStock ? (
+                <span className="text-xs font-mono text-red-700 bg-red-50 px-2.5 py-0.5 rounded-md font-extrabold border border-red-200 uppercase flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 text-red-600" />
+                  <span>Out of Stock</span>
+                </span>
+              ) : (
+                <span className="text-xs font-mono text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md font-bold border border-emerald-200">
+                  In Stock: {product.stock} pcs
+                </span>
+              )}
             </div>
 
             {/* Title & Rupee Base Price */}
@@ -351,93 +370,111 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
               </div>
             </div>
 
-            {/* Interactive Quantity Stepper with Live Rupee Savings */}
-            <div className="pt-2 border-t border-neutral-200">
-              <div className="flex items-center justify-between text-xs mb-2">
-                <span className="font-bold text-neutral-900">Lot Quantity (MOQ: {product.moq || 1} pcs):</span>
-                {savings > 0 && (
-                  <span className="text-emerald-800 font-extrabold text-[11px] bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full">
-                    Bulk Profit Saved: ₹{formatPrice(savings)}
-                  </span>
-                )}
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="flex items-center border border-neutral-300 rounded-full bg-white px-2 py-1 shadow-inner">
-                  <button
-                    onClick={() => {
-                      const minMoq = product.moq || 1;
-                      const step = (quantity - minMoq >= 5) ? 5 : 1;
-                      setQuantity(Math.max(minMoq, quantity - step));
-                    }}
-                    className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base disabled:opacity-30 disabled:cursor-not-allowed"
-                    disabled={quantity <= (product.moq || 1)}
-                    title={quantity <= (product.moq || 1) ? `Minimum order is ${product.moq || 1} pcs` : 'Decrease'}
-                  >
-                    -
-                  </button>
-                  <input
-                    type="number"
-                    min={product.moq || 1}
-                    max={product.stock}
-                    value={quantity}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value);
-                      if (!isNaN(val)) {
-                        setQuantity(Math.min(product.stock, val));
-                      }
-                    }}
-                    onBlur={() => {
-                      const minMoq = product.moq || 1;
-                      if (quantity < minMoq) {
-                        setQuantity(minMoq);
-                      }
-                    }}
-                    className="w-16 text-center font-black text-sm text-neutral-900 focus:outline-none"
-                  />
-                  <button
-                    onClick={() => setQuantity(Math.min(product.stock, quantity + 5))}
-                    className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
-                    title="Increase"
-                  >
-                    +
-                  </button>
+            {/* Interactive Quantity Stepper with Live Rupee Savings (Hidden if Out of Stock) */}
+            {!isOutOfStock ? (
+              <div className="pt-2 border-t border-neutral-200">
+                <div className="flex items-center justify-between text-xs mb-2">
+                  <span className="font-bold text-neutral-900">Lot Quantity (MOQ: {product.moq || 1} pcs):</span>
+                  {savings > 0 && (
+                    <span className="text-emerald-800 font-extrabold text-[11px] bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full">
+                      Bulk Profit Saved: ₹{formatPrice(savings)}
+                    </span>
+                  )}
                 </div>
 
-                <div className="text-right flex-1">
-                  <div className="text-xs text-neutral-500 font-medium">Lot Subtotal:</div>
-                  <div className="text-xl font-black text-neutral-900 font-heading">
-                    ₹{formatPrice(totalCost)}
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center border border-neutral-300 rounded-full bg-white px-2 py-1 shadow-inner">
+                    <button
+                      onClick={() => {
+                        const minMoq = product.moq || 1;
+                        const step = (quantity - minMoq >= 5) ? 5 : 1;
+                        setQuantity(Math.max(minMoq, quantity - step));
+                      }}
+                      className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base disabled:opacity-30 disabled:cursor-not-allowed"
+                      disabled={quantity <= (product.moq || 1)}
+                      title={quantity <= (product.moq || 1) ? `Minimum order is ${product.moq || 1} pcs` : 'Decrease'}
+                    >
+                      -
+                    </button>
+                    <input
+                      type="number"
+                      min={product.moq || 1}
+                      max={product.stock}
+                      value={quantity}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        if (!isNaN(val)) {
+                          setQuantity(Math.min(product.stock, val));
+                        }
+                      }}
+                      onBlur={() => {
+                        const minMoq = product.moq || 1;
+                        if (quantity < minMoq) {
+                          setQuantity(minMoq);
+                        }
+                      }}
+                      className="w-16 text-center font-black text-sm text-neutral-900 focus:outline-none"
+                    />
+                    <button
+                      onClick={() => setQuantity(Math.min(product.stock, quantity + 5))}
+                      className="w-7 h-7 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
+                      title="Increase"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div className="text-right flex-1">
+                    <div className="text-xs text-neutral-500 font-medium">Lot Subtotal:</div>
+                    <div className="text-xl font-black text-neutral-900 font-heading">
+                      ₹{formatPrice(totalCost)}
+                    </div>
                   </div>
                 </div>
               </div>
+            ) : (
+              <div className="p-3.5 bg-neutral-100 border border-neutral-300 rounded-2xl flex items-center gap-3 text-xs">
+                <AlertCircle className="w-5 h-5 text-red-700 flex-shrink-0" />
+                <div>
+                  <div className="font-black text-neutral-900 uppercase">Currently Out of Stock</div>
+                  <div className="text-neutral-500">Order placement paused. Contact support for re-manufacturing.</div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Action Buttons: Hidden when Out of Stock */}
+          {!isOutOfStock ? (
+            <div className="pt-5 mt-4 border-t border-neutral-200 flex items-center gap-3">
+              <button
+                onClick={() => {
+                  const safeQty = Math.max(product.moq || 1, quantity);
+                  onAddToCart(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+                }}
+                className="flex-1 py-3.5 px-4 bg-white border-2 border-neutral-900 text-neutral-900 hover:bg-neutral-100 font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <ShoppingBag className="w-4 h-4 text-red-600" />
+                <span>Add to Bag</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  const safeQty = Math.max(product.moq || 1, quantity);
+                  onDirectOrderNow(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+                }}
+                className="flex-1 py-3.5 px-4 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg"
+              >
+                <Zap className="w-4 h-4 text-yellow-300" />
+                <span>Order Now</span>
+              </button>
             </div>
-          </div>
-
-          {/* Action Buttons: Bold Red / Dark Theme */}
-          <div className="pt-5 mt-4 border-t border-neutral-200 flex items-center gap-3">
-            <button
-              onClick={() => {
-                const safeQty = Math.max(product.moq || 1, quantity);
-                onAddToCart(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
-              }}
-              className="flex-1 py-3.5 px-4 bg-white border-2 border-neutral-900 text-neutral-900 hover:bg-neutral-100 font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center justify-center gap-2"
-            >
-              <ShoppingBag className="w-4 h-4 text-red-600" />
-              <span>Add to Bag</span>
-            </button>
-
-            <button
-              onClick={() => {
-                const safeQty = Math.max(product.moq || 1, quantity);
-                onDirectOrderNow(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
-              }}
-              className="flex-1 py-3.5 px-4 bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center justify-center gap-2 shadow-lg"
-            >
-              <Zap className="w-4 h-4 text-yellow-300" />
-              <span>Order Now</span>
-            </button>
-          </div>
+          ) : (
+            <div className="pt-4 mt-3 border-t border-neutral-200">
+              <div className="w-full py-3 px-4 bg-neutral-900 text-white font-black text-xs uppercase tracking-wider rounded-full text-center">
+                Out of Stock - Restocking Soon
+              </div>
+            </div>
+          )}
 
         </div>
       </div>

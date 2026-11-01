@@ -13,7 +13,7 @@ import {
   remove,
   update
 } from '../firebase.ts';
-import { Product, WholesaleOrder, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide, PaymentSettings } from '../types.ts';
+import { Product, WholesaleOrder, WholesaleUser, CategoryItem, CompanyFooterInfo, HeroSlide, PaymentSettings, SupportTicket, TicketMessage } from '../types.ts';
 import { INITIAL_PRODUCTS, INITIAL_CATEGORIES, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES, DEFAULT_PAYMENT_SETTINGS } from '../data/defaultProducts.ts';
 
 const PRODUCTS_COLLECTION = 'products';
@@ -21,6 +21,8 @@ const ORDERS_COLLECTION = 'wholesale_orders';
 const USERS_COLLECTION = 'users';
 const CATEGORIES_COLLECTION = 'categories';
 const HERO_SLIDES_COLLECTION = 'hero_slides';
+const TICKETS_COLLECTION = 'support_tickets';
+const LOCAL_TICKETS_KEY = 'stardot_local_tickets_v1';
 
 const LOCAL_PRODUCTS_KEY = 'stardot_local_products_inr_v3';
 const LOCAL_CATEGORIES_KEY = 'stardot_local_categories_v3';
@@ -617,38 +619,49 @@ export function subscribeToCurrentUser(
   let isMounted = true;
   const cleanListeners: (() => void)[] = [];
 
-  const handleUserData = (userData: any, sourceKey?: string) => {
-    if (!isMounted || !userData || typeof userData !== 'object') return;
+  const handleAllUsersSnapshot = (val: any) => {
+    if (!isMounted || !val || typeof val !== 'object') return;
     const current = getCurrentStoredUser() || currentUser;
     if (!current) return;
 
-    const uPhone = String(userData.phone || '').replace(/\D/g, '').slice(-10);
     const currPhone = String(current.phone || '').replace(/\D/g, '').slice(-10);
-    const uEmail = String(userData.email || '').trim().toLowerCase();
     const currEmail = String(current.email || '').trim().toLowerCase();
-    const uUid = String(userData.uid || sourceKey || '').trim();
+    const currUid = String(current.uid || '').trim();
 
-    // STRICT MATCH: Only updates if UID matches, OR 10-digit mobile matches, OR verified email matches!
-    const isSameUser = Boolean(
-      (uUid && current.uid && uUid === current.uid) ||
-      (currPhone && uPhone && currPhone.length >= 10 && currPhone === uPhone) ||
-      (currEmail && uEmail && currEmail.includes('@') && currEmail === uEmail)
-    );
+    // Collect all matching user objects from RTDB
+    const matching: any[] = [];
+    Object.keys(val).forEach(k => {
+      const u = val[k];
+      if (!u || typeof u !== 'object') return;
+      const uPhone = String(u.phone || '').replace(/\D/g, '').slice(-10);
+      const uEmail = String(u.email || '').trim().toLowerCase();
+      const uUid = String(u.uid || k).trim();
 
-    if (isSameUser) {
-      // Dynamic live role based on Firebase record:
-      // If Firebase role is 'admin', role becomes 'admin'.
-      // If Firebase role is 'user', role becomes 'user' and admin button disappears live!
-      const rawRole = String(userData.role || '').trim().toLowerCase();
-      const targetRole: 'admin' | 'user' = (rawRole === 'admin' || rawRole === 'superadmin' || rawRole === 'administrator')
-        ? 'admin'
-        : 'user';
+      const isMatch = Boolean(
+        (currUid && uUid && currUid === uUid) ||
+        (currPhone && uPhone && currPhone.length >= 10 && currPhone === uPhone) ||
+        (currEmail && uEmail && currEmail.includes('@') && currEmail === uEmail)
+      );
+      if (isMatch) {
+        matching.push({ ...u, uid: u.uid || k });
+      }
+    });
 
-      if (current.role !== targetRole || current.name !== userData.name || (uUid && current.uid !== uUid)) {
+    if (matching.length > 0) {
+      // Priority to admin role: if ANY matching record in Firebase has role 'admin', user is ADMIN!
+      const adminEntry = matching.find(m => {
+        const r = String(m.role || '').trim().toLowerCase();
+        return r === 'admin' || r === 'superadmin' || r === 'administrator';
+      });
+
+      const activeEntry = adminEntry || matching[matching.length - 1];
+      const targetRole: 'admin' | 'user' = adminEntry ? 'admin' : 'user';
+
+      if (current.role !== targetRole || current.name !== activeEntry.name || (activeEntry.uid && current.uid !== activeEntry.uid)) {
         const enriched: WholesaleUser = {
           ...current,
-          ...userData,
-          uid: uUid || current.uid,
+          ...activeEntry,
+          uid: activeEntry.uid || current.uid,
           role: targetRole
         };
         saveCurrentUser(enriched);
@@ -662,7 +675,9 @@ export function subscribeToCurrentUser(
     const userRef = ref(rtdb, `users/${currentUser.uid}`);
     const unsubUser = onValue(userRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) handleUserData(data, currentUser.uid);
+      if (data) {
+        handleAllUsersSnapshot({ [currentUser.uid]: data });
+      }
     });
     cleanListeners.push(() => {
       if (typeof unsubUser === 'function') unsubUser();
@@ -672,11 +687,7 @@ export function subscribeToCurrentUser(
     const allUsersRef = ref(rtdb, 'users');
     const unsubAll = onValue(allUsersRef, (snapshot) => {
       const val = snapshot.val();
-      if (val && typeof val === 'object') {
-        Object.keys(val).forEach(k => {
-          handleUserData(val[k], k);
-        });
-      }
+      if (val) handleAllUsersSnapshot(val);
     });
     cleanListeners.push(() => {
       if (typeof unsubAll === 'function') unsubAll();
@@ -686,7 +697,7 @@ export function subscribeToCurrentUser(
     const userDocRef = doc(db, USERS_COLLECTION, currentUser.uid);
     const unsubFs = onSnapshot(userDocRef, (snap) => {
       if (snap.exists()) {
-        handleUserData(snap.data(), currentUser.uid);
+        handleAllUsersSnapshot({ [currentUser.uid]: snap.data() });
       }
     }, () => {});
     cleanListeners.push(() => {
@@ -872,6 +883,9 @@ export async function autoRegisterOrLoginCheckoutUser(data: {
     const snap = await get(ref(rtdb, 'users'));
     if (snap.exists()) {
       const allUsers = snap.val();
+      let matchedAdminUid: string | null = null;
+      let matchedUserUid: string | null = null;
+
       for (const k of Object.keys(allUsers)) {
         const u = allUsers[k];
         if (u) {
@@ -882,13 +896,22 @@ export async function autoRegisterOrLoginCheckoutUser(data: {
             (data.email && uEmail === data.email.trim().toLowerCase()) ||
             (current && k === current.uid)
           ) {
-            uid = u.uid || k;
+            const thisUid = u.uid || k;
             if (isUserAdmin(u) || String(u.role || '').toLowerCase() === 'admin') {
-              role = 'admin';
+              matchedAdminUid = thisUid;
+              break;
+            } else if (!matchedUserUid) {
+              matchedUserUid = thisUid;
             }
-            break;
           }
         }
+      }
+
+      if (matchedAdminUid) {
+        uid = matchedAdminUid;
+        role = 'admin';
+      } else if (matchedUserUid && role !== 'admin') {
+        uid = matchedUserUid;
       }
     }
   } catch (err) {
@@ -1687,5 +1710,270 @@ export async function updateOrderTracking(
     }
   } catch (e) {
     console.warn('Update tracking sync note:', e);
+  }
+}
+
+// -------------------------------------------------------------
+// HELP & SUPPORT TICKETS & REAL-TIME CHAT
+// -------------------------------------------------------------
+
+export function getLocalTickets(): SupportTicket[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_TICKETS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+  return [];
+}
+
+export function saveLocalTickets(tickets: SupportTicket[]) {
+  try {
+    localStorage.setItem(LOCAL_TICKETS_KEY, JSON.stringify(tickets));
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+// Subscribe to all support tickets (Admin Panel view)
+export function subscribeToTickets(onUpdate: (tickets: SupportTicket[]) => void): () => void {
+  let isMounted = true;
+  const initial = getLocalTickets();
+  if (initial.length > 0) onUpdate(initial);
+
+  // Firestore listener
+  const unsubFirestore = onSnapshot(collection(db, TICKETS_COLLECTION), (snapshot) => {
+    if (!isMounted) return;
+    const firestoreTickets: SupportTicket[] = [];
+    snapshot.forEach(docSnap => {
+      firestoreTickets.push(docSnap.data() as SupportTicket);
+    });
+
+    if (firestoreTickets.length > 0) {
+      firestoreTickets.sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
+      saveLocalTickets(firestoreTickets);
+      onUpdate(firestoreTickets);
+    }
+  }, (err) => {
+    console.warn('Firestore tickets subscription fallback:', err);
+  });
+
+  // RTDB listener
+  const rtdbRef = ref(rtdb, 'support_tickets');
+  const unsubRtdb = onValue(rtdbRef, (snapshot) => {
+    if (!isMounted) return;
+    const val = snapshot.val();
+    if (val) {
+      const rtdbList: SupportTicket[] = Object.values(val);
+      rtdbList.sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
+      saveLocalTickets(rtdbList);
+      onUpdate(rtdbList);
+    }
+  }, (err) => {
+    console.warn('RTDB tickets subscription fallback:', err);
+  });
+
+  return () => {
+    isMounted = false;
+    unsubFirestore();
+    unsubRtdb();
+  };
+}
+
+// Subscribe to user tickets
+export function subscribeToUserTickets(userId: string, onUpdate: (tickets: SupportTicket[]) => void): () => void {
+  return subscribeToTickets((allTickets) => {
+    const userTickets = allTickets.filter(t => t.userId === userId);
+    onUpdate(userTickets);
+  });
+}
+
+// Create new support ticket with initial message
+export async function createSupportTicket(
+  ticketData: {
+    userId: string;
+    userName: string;
+    userEmail?: string;
+    userPhone?: string;
+    subject: string;
+    category: SupportTicket['category'];
+    orderId?: string;
+  },
+  initialMessageText: string
+): Promise<SupportTicket> {
+  const timestamp = Date.now();
+  const ticketId = `TCK-${Math.floor(100000 + Math.random() * 900000)}`;
+
+  const firstMessage: TicketMessage = {
+    id: `msg-${timestamp}-${Math.floor(Math.random() * 1000)}`,
+    sender: 'user',
+    senderName: ticketData.userName || 'Buyer',
+    text: initialMessageText.trim(),
+    timestamp
+  };
+
+  const newTicket: SupportTicket = {
+    id: ticketId,
+    userId: ticketData.userId,
+    userName: ticketData.userName,
+    userEmail: ticketData.userEmail,
+    userPhone: ticketData.userPhone,
+    subject: ticketData.subject.trim(),
+    category: ticketData.category,
+    orderId: ticketData.orderId?.trim() || undefined,
+    status: 'new',
+    unreadByAdmin: true,
+    unreadByUser: false,
+    messages: [firstMessage],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+
+  // Local optimistic update
+  const local = getLocalTickets();
+  const updatedList = [newTicket, ...local.filter(t => t.id !== ticketId)];
+  saveLocalTickets(updatedList);
+
+  // Sync to Firestore & RTDB
+  try {
+    await setDoc(doc(db, TICKETS_COLLECTION, ticketId), newTicket);
+    await set(ref(rtdb, `support_tickets/${ticketId}`), newTicket);
+    if (ticketData.userId) {
+      await set(ref(rtdb, `user_tickets/${ticketData.userId}/${ticketId}`), newTicket);
+    }
+  } catch (e) {
+    console.warn('Firebase ticket creation sync note:', e);
+  }
+
+  return newTicket;
+}
+
+// Add chat message to ticket
+export async function addTicketMessage(
+  ticketId: string,
+  sender: 'user' | 'admin',
+  senderName: string,
+  text: string
+): Promise<void> {
+  if (!text.trim()) return;
+  const timestamp = Date.now();
+  const newMsg: TicketMessage = {
+    id: `msg-${timestamp}-${Math.floor(Math.random() * 1000)}`,
+    sender,
+    senderName,
+    text: text.trim(),
+    timestamp
+  };
+
+  const local = getLocalTickets();
+  const ticket = local.find(t => t.id === ticketId);
+  const updatedMessages = ticket ? [...(ticket.messages || []), newMsg] : [newMsg];
+  const nextStatus = sender === 'user' && ticket?.status === 'closed' ? 'active' : (ticket?.status === 'new' && sender === 'admin' ? 'active' : (ticket?.status || 'active'));
+
+  const patch: Partial<SupportTicket> = {
+    messages: updatedMessages,
+    status: nextStatus,
+    unreadByAdmin: sender === 'user',
+    unreadByUser: sender === 'admin',
+    updatedAt: timestamp
+  };
+
+  // Local update
+  const updatedList = local.map(t => t.id === ticketId ? { ...t, ...patch } : t);
+  saveLocalTickets(updatedList);
+
+  // Sync to Firebase
+  try {
+    await setDoc(doc(db, TICKETS_COLLECTION, ticketId), patch, { merge: true });
+    await update(ref(rtdb, `support_tickets/${ticketId}`), patch);
+    if (ticket?.userId) {
+      await update(ref(rtdb, `user_tickets/${ticket.userId}/${ticketId}`), patch);
+    }
+  } catch (e) {
+    console.warn('Firebase message sync note:', e);
+  }
+}
+
+// Update ticket status (e.g. Close Ticket or Active)
+export async function updateTicketStatus(
+  ticketId: string,
+  status: 'new' | 'active' | 'closed'
+): Promise<void> {
+  const timestamp = Date.now();
+  const patch: Partial<SupportTicket> = {
+    status,
+    updatedAt: timestamp,
+    unreadByUser: status === 'closed'
+  };
+  if (status === 'closed') {
+    patch.closedAt = timestamp;
+  }
+
+  const local = getLocalTickets();
+  const ticket = local.find(t => t.id === ticketId);
+  const updatedList = local.map(t => t.id === ticketId ? { ...t, ...patch } : t);
+  saveLocalTickets(updatedList);
+
+  try {
+    await setDoc(doc(db, TICKETS_COLLECTION, ticketId), patch, { merge: true });
+    await update(ref(rtdb, `support_tickets/${ticketId}`), patch);
+    if (ticket?.userId) {
+      await update(ref(rtdb, `user_tickets/${ticket.userId}/${ticketId}`), patch);
+    }
+  } catch (e) {
+    console.warn('Firebase ticket status sync note:', e);
+  }
+}
+
+// Mark ticket as read by User or Admin
+export async function markTicketRead(
+  ticketId: string,
+  reader: 'user' | 'admin'
+): Promise<void> {
+  const patch: Partial<SupportTicket> = reader === 'user' ? { unreadByUser: false } : { unreadByAdmin: false };
+  const local = getLocalTickets();
+  const ticket = local.find(t => t.id === ticketId);
+  saveLocalTickets(local.map(t => t.id === ticketId ? { ...t, ...patch } : t));
+
+  try {
+    await setDoc(doc(db, TICKETS_COLLECTION, ticketId), patch, { merge: true });
+    await update(ref(rtdb, `support_tickets/${ticketId}`), patch);
+    if (ticket?.userId) {
+      await update(ref(rtdb, `user_tickets/${ticket.userId}/${ticketId}`), patch);
+    }
+  } catch (e) {
+    console.warn('Mark ticket read note:', e);
+  }
+}
+
+// Submit 1-time optional rating & feedback for closed ticket
+export async function submitTicketFeedback(
+  ticketId: string,
+  rating?: number,
+  feedback?: string
+): Promise<void> {
+  const timestamp = Date.now();
+  const patch: Partial<SupportTicket> = {
+    rating: typeof rating === 'number' ? rating : undefined,
+    feedback: feedback?.trim() || undefined,
+    feedbackSubmittedAt: timestamp,
+    updatedAt: timestamp
+  };
+
+  const local = getLocalTickets();
+  const ticket = local.find(t => t.id === ticketId);
+  saveLocalTickets(local.map(t => t.id === ticketId ? { ...t, ...patch } : t));
+
+  try {
+    await setDoc(doc(db, TICKETS_COLLECTION, ticketId), patch, { merge: true });
+    await update(ref(rtdb, `support_tickets/${ticketId}`), patch);
+    if (ticket?.userId) {
+      await update(ref(rtdb, `user_tickets/${ticket.userId}/${ticketId}`), patch);
+    }
+  } catch (e) {
+    console.warn('Submit feedback sync note:', e);
   }
 }

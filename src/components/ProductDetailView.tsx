@@ -187,15 +187,30 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
               )}
 
               {/* Badges */}
-              <div className="absolute top-4 left-4 flex flex-col gap-1.5">
-                {product.isNew && (
-                  <span className="px-3 py-1 rounded-md bg-neutral-900 text-white text-[11px] font-black uppercase tracking-wider">
-                    New Wholesale Lot
+              <div className="absolute top-4 left-4 flex flex-col gap-1.5 items-start">
+                {isOutOfStock ? (
+                  <span className="px-3.5 py-1.5 rounded-md bg-neutral-900 text-red-400 border border-red-500/60 text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md">
+                    <AlertCircle className="w-4 h-4 text-red-400" />
+                    <span>Out of Stock</span>
+                  </span>
+                ) : (
+                  <>
+                    {product.isNew && (
+                      <span className="px-3 py-1 rounded-md bg-neutral-900 text-white text-[11px] font-black uppercase tracking-wider">
+                        New Wholesale Lot
+                      </span>
+                    )}
+                    <span className="px-3 py-1 rounded-md bg-red-800 text-white text-[11px] font-black uppercase tracking-wider">
+                      Factory MOQ: {product.moq} pcs
+                    </span>
+                  </>
+                )}
+                {isCodAvailable && (
+                  <span className="px-3 py-1 rounded-md bg-white/95 backdrop-blur-sm text-neutral-900 text-[11px] font-bold border border-neutral-200/90 shadow-2xs flex items-center gap-1.5">
+                    <Banknote className="w-3.5 h-3.5 text-neutral-800" />
+                    <span>Cash on Delivery Available</span>
                   </span>
                 )}
-                <span className="px-3 py-1 rounded-md bg-red-800 text-white text-[11px] font-black uppercase tracking-wider">
-                  Factory MOQ: {product.moq} pcs
-                </span>
               </div>
             </div>
 
@@ -427,6 +442,11 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
 
             {/* Trust Badges */}
             <div className="bg-neutral-100 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs text-neutral-600">
+              {isCodAvailable && (
+                <span className="flex items-center gap-1.5 font-bold text-neutral-800">
+                  <Banknote className="w-4 h-4 text-neutral-800" /> Cash on Delivery Available
+                </span>
+              )}
               <span className="flex items-center gap-1.5 font-medium">
                 <Truck className="w-4 h-4 text-red-800" /> All-India Cargo Freight
               </span>
@@ -443,90 +463,114 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
       <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-neutral-200 px-4 sm:px-8 py-3.5 shadow-2xl">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 sm:gap-6">
           
-          {/* Quantity Stepper & Savings info */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center border border-neutral-300 rounded-full bg-white px-2 py-1 shadow-inner">
-              <button
-                onClick={() => {
-                  const minMoq = product.moq || 1;
-                  const step = (quantity - minMoq >= 5) ? 5 : 1;
-                  setQuantity(Math.max(minMoq, quantity - step));
-                }}
-                className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base disabled:opacity-30 disabled:cursor-not-allowed"
-                disabled={quantity <= (product.moq || 1)}
-                title={quantity <= (product.moq || 1) ? `Minimum order is ${product.moq || 1} pcs` : 'Decrease'}
-              >
-                -
-              </button>
-              <input
-                type="number"
-                min={product.moq || 1}
-                max={product.stock}
-                value={quantity}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value);
-                  if (!isNaN(val)) {
-                    setQuantity(Math.min(product.stock, val));
-                  }
-                }}
-                onBlur={() => {
-                  const minMoq = product.moq || 1;
-                  if (quantity < minMoq) {
-                    setQuantity(minMoq);
-                  }
-                }}
-                className="w-14 text-center font-black text-sm text-neutral-900 focus:outline-none"
-              />
-              <button
-                onClick={() => setQuantity(Math.min(product.stock, quantity + 5))}
-                className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
-                title="Increase"
-              >
-                +
-              </button>
-            </div>
-
-            {/* Total price info */}
-            <div>
-              <div className="text-[11px] text-neutral-500 font-medium">
-                Total ({quantity} pcs @ ₹{currentUnitPrice}):
+          {isOutOfStock ? (
+            /* Out of Stock: Buy / Order Now buttons are completely hidden */
+            <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3 bg-neutral-100 border border-neutral-300 px-4 py-3 rounded-2xl">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-full bg-red-100 text-red-800 flex items-center justify-center flex-shrink-0">
+                  <AlertCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="font-black text-sm text-neutral-900 uppercase tracking-wide">
+                    Currently Out of Stock
+                  </div>
+                  <div className="text-xs text-neutral-500">
+                    This wholesale lot is temporarily unavailable for order placement.
+                  </div>
+                </div>
               </div>
-              <div className="text-xl sm:text-2xl font-black text-neutral-900 font-heading leading-tight">
-                ₹{formatPrice(totalCost)}
-              </div>
-              {savings > 0 && (
-                <span className="text-[10px] text-emerald-700 font-bold hidden sm:inline">
-                  Saved ₹{formatPrice(savings)} with bulk slab
-                </span>
-              )}
+              <span className="px-4 py-2 bg-neutral-900 text-white text-xs font-black uppercase tracking-wider rounded-xl shadow-xs">
+                Restocking Soon
+              </span>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Quantity Stepper & Savings info */}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center border border-neutral-300 rounded-full bg-white px-2 py-1 shadow-inner">
+                  <button
+                    onClick={() => {
+                      const minMoq = product.moq || 1;
+                      const step = (quantity - minMoq >= 5) ? 5 : 1;
+                      setQuantity(Math.max(minMoq, quantity - step));
+                    }}
+                    className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled={quantity <= (product.moq || 1)}
+                    title={quantity <= (product.moq || 1) ? `Minimum order is ${product.moq || 1} pcs` : 'Decrease'}
+                  >
+                    -
+                  </button>
+                  <input
+                    type="number"
+                    min={product.moq || 1}
+                    max={product.stock}
+                    value={quantity}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      if (!isNaN(val)) {
+                        setQuantity(Math.min(product.stock, val));
+                      }
+                    }}
+                    onBlur={() => {
+                      const minMoq = product.moq || 1;
+                      if (quantity < minMoq) {
+                        setQuantity(minMoq);
+                      }
+                    }}
+                    className="w-14 text-center font-black text-sm text-neutral-900 focus:outline-none"
+                  />
+                  <button
+                    onClick={() => setQuantity(Math.min(product.stock, quantity + 5))}
+                    className="w-8 h-8 rounded-full hover:bg-neutral-100 flex items-center justify-center font-bold text-neutral-800 text-base"
+                    title="Increase"
+                  >
+                    +
+                  </button>
+                </div>
 
-          {/* Action Buttons: White / Darkish Red */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            <button
-              onClick={() => {
-                const safeQty = Math.max(product.moq || 1, quantity);
-                onAddToCart(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
-              }}
-              className="py-3 px-4 sm:px-6 bg-white border-2 border-neutral-900 text-neutral-900 hover:bg-neutral-100 font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center gap-1.5"
-            >
-              <ShoppingBag className="w-4 h-4 text-red-800" />
-              <span className="hidden sm:inline">Add to Bag</span>
-              <span className="sm:hidden">Bag</span>
-            </button>
+                {/* Total price info */}
+                <div>
+                  <div className="text-[11px] text-neutral-500 font-medium">
+                    Total ({quantity} pcs @ ₹{currentUnitPrice}):
+                  </div>
+                  <div className="text-xl sm:text-2xl font-black text-neutral-900 font-heading leading-tight">
+                    ₹{formatPrice(totalCost)}
+                  </div>
+                  {savings > 0 && (
+                    <span className="text-[10px] text-emerald-700 font-bold hidden sm:inline">
+                      Saved ₹{formatPrice(savings)} with bulk slab
+                    </span>
+                  )}
+                </div>
+              </div>
 
-            <button
-              onClick={() => {
-                const safeQty = Math.max(product.moq || 1, quantity);
-                onDirectOrderNow(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
-              }}
-              className="py-3 px-6 sm:px-8 bg-red-800 hover:bg-red-900 text-white font-black text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center gap-2 shadow-lg"
-            >
-              <Zap className="w-4 h-4 text-red-200" />
-              <span>Order Now</span>
-            </button>
-          </div>
+              {/* Action Buttons: White / Darkish Red */}
+              <div className="flex items-center gap-2 sm:gap-3">
+                <button
+                  onClick={() => {
+                    const safeQty = Math.max(product.moq || 1, quantity);
+                    onAddToCart(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+                  }}
+                  className="py-3 px-4 sm:px-6 bg-white border-2 border-neutral-900 text-neutral-900 hover:bg-neutral-100 font-bold text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center gap-1.5"
+                >
+                  <ShoppingBag className="w-4 h-4 text-red-800" />
+                  <span className="hidden sm:inline">Add to Bag</span>
+                  <span className="sm:hidden">Bag</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const safeQty = Math.max(product.moq || 1, quantity);
+                    onDirectOrderNow(product, selectedSize, selectedColor, safeQty, currentUnitPrice);
+                  }}
+                  className="py-3 px-6 sm:px-8 bg-red-800 hover:bg-red-900 text-white font-black text-xs sm:text-sm rounded-full transition-all active:scale-95 flex items-center gap-2 shadow-lg"
+                >
+                  <Zap className="w-4 h-4 text-red-200" />
+                  <span>Order Now</span>
+                </button>
+              </div>
+            </>
+          )}
 
         </div>
       </div>

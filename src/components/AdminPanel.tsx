@@ -38,14 +38,19 @@ import {
   AlertCircle,
   Upload,
   Copy,
-  Share2
+  Share2,
+  Headphones,
+  Star,
+  Send,
+  Banknote,
+  ChevronRight
 } from 'lucide-react';
-import { Product, WholesaleOrder, BulkTier, CategoryItem, ProductSpecCard, CompanyFooterInfo, HeroSlide, PaymentSettings } from '../types.ts';
+import { Product, WholesaleOrder, BulkTier, CategoryItem, ProductSpecCard, CompanyFooterInfo, HeroSlide, PaymentSettings, SupportTicket, TicketMessage } from '../types.ts';
 import { 
   saveProduct, 
   deleteProductById, 
   subscribeToOrders, 
-  seedInitialProducts,
+  seedInitialProducts, 
   updateProductSequences,
   saveCategory,
   deleteCategoryById,
@@ -67,7 +72,11 @@ import {
   subscribeToPaymentSettings,
   acceptOrderPayment,
   rejectOrderPayment,
-  updateOrderTracking
+  updateOrderTracking,
+  subscribeToTickets,
+  addTicketMessage,
+  updateTicketStatus,
+  markTicketRead
 } from '../services/dataService.ts';
 import { SAMPLE_IMAGE_PRESETS, DEFAULT_FOOTER_INFO, DEFAULT_HERO_SLIDES, DEFAULT_PAYMENT_SETTINGS } from '../data/defaultProducts.ts';
 import { formatPrice, formatDate } from '../utils/format.ts';
@@ -102,9 +111,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
 
-  // Tabs: 'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'payment' | 'footer'
-  const [activeTab, setActiveTab] = useState<'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'payment' | 'footer'>('products');
+  // Tabs: 'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'payment' | 'footer' | 'support'
+  const [activeTab, setActiveTab] = useState<'products' | 'placements' | 'hero' | 'categories' | 'orders' | 'payment' | 'footer' | 'support'>('products');
   const [orders, setOrders] = useState<WholesaleOrder[]>([]);
+
+  // Help & Support Tickets State
+  const [supportTickets, setSupportTickets] = useState<SupportTicket[]>([]);
+  const [supportFilter, setSupportFilter] = useState<'all' | 'new' | 'active' | 'closed'>('new');
+  const [activeAdminTicketId, setActiveAdminTicketId] = useState<string | null>(null);
+  const [adminReplyText, setAdminReplyText] = useState('');
+  const [isAdminSendingReply, setIsAdminSendingReply] = useState(false);
+  const [adminTicketSearch, setAdminTicketSearch] = useState('');
+
+  // Product Stock & COD State
+  const [formIsOutOfStock, setFormIsOutOfStock] = useState(false);
+  const [formCodAvailable, setFormCodAvailable] = useState(true);
+  const [updatingStockProdId, setUpdatingStockProdId] = useState<string | null>(null);
 
   // Payment Gateway & Freight Charge Settings State
   const [paymentSettings, setPaymentSettings] = useState<PaymentSettings>(() => getLocalPaymentSettings());
@@ -232,11 +254,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   useEffect(() => {
     if (isOpen && isAdminLoggedIn) {
-      const unsub = subscribeToOrders((liveOrders) => {
+      const unsubOrders = subscribeToOrders((liveOrders) => {
         setOrders(liveOrders);
       });
+      const unsubTickets = subscribeToTickets((liveTickets) => {
+        setSupportTickets(liveTickets);
+      });
       return () => {
-        if (typeof unsub === 'function') unsub();
+        if (typeof unsubOrders === 'function') unsubOrders();
+        if (typeof unsubTickets === 'function') unsubTickets();
       };
     }
   }, [isOpen, isAdminLoggedIn]);
@@ -293,6 +319,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormIsNew(!!prod.isNew);
     setFormIsTrending(!!prod.isTrending);
     setFormIsFeatured(!!prod.isFeatured);
+    setFormIsOutOfStock(Boolean(prod.isOutOfStock));
+    setFormCodAvailable(prod.codAvailable !== false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -303,6 +331,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormCategory(categories.find(c => c.id !== 'all')?.id || 'Sweaters');
     setFormSku(`STD-IN-${Math.floor(1000 + Math.random() * 9000)}`);
     setFormShortCode(generateNewShortCode());
+    setFormIsOutOfStock(false);
+    setFormCodAvailable(true);
     setFormBasePrice(699);
     setFormMoq(10);
     setFormStock(1000);
@@ -371,6 +401,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       basePrice: Number(formBasePrice),
       moq: safeMoq,
       stock: Number(formStock),
+      isOutOfStock: formIsOutOfStock,
+      codAvailable: formCodAvailable,
       description: formDescription,
       material: formMaterial,
       colors: formColors.length > 0 ? formColors : ['Standard'],
@@ -606,6 +638,58 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setTimeout(() => setStatusMessage(null), 3000);
     } finally {
       setUpdatingMoqProdId(null);
+    }
+  };
+
+  // Quick 1-Click In-Stock / Out-of-Stock Toggle directly from table
+  const handleToggleStockStatus = async (prod: Product) => {
+    const newStatus = !prod.isOutOfStock;
+    setUpdatingStockProdId(prod.id);
+    try {
+      await saveProduct({ ...prod, isOutOfStock: newStatus });
+      onRefreshProducts();
+      setStatusMessage(`"${prod.name}" marked as ${newStatus ? 'OUT OF STOCK' : 'IN STOCK'}!`);
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (e) {
+      console.error(e);
+      setStatusMessage('Error updating stock status.');
+      setTimeout(() => setStatusMessage(null), 3000);
+    } finally {
+      setUpdatingStockProdId(null);
+    }
+  };
+
+  // -------------------------------------------------------------
+  // SUPPORT TICKETS HANDLERS
+  // -------------------------------------------------------------
+  const handleAdminSendReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeAdminTicketId || !adminReplyText.trim() || isAdminSendingReply) return;
+
+    setIsAdminSendingReply(true);
+    const text = adminReplyText.trim();
+    setAdminReplyText('');
+    try {
+      await addTicketMessage(activeAdminTicketId, 'admin', 'Factory Support Desk', text);
+      setStatusMessage('Reply sent to buyer!');
+      setTimeout(() => setStatusMessage(null), 2500);
+    } catch (err) {
+      console.error(err);
+      setStatusMessage('Error sending reply.');
+    } finally {
+      setIsAdminSendingReply(false);
+    }
+  };
+
+  const handleAdminToggleTicketStatus = async (ticketId: string, currentStatus: SupportTicket['status']) => {
+    const nextStatus = currentStatus === 'closed' ? 'active' : 'closed';
+    try {
+      await updateTicketStatus(ticketId, nextStatus);
+      setStatusMessage(`Ticket #${ticketId} marked as ${nextStatus.toUpperCase()}!`);
+      setTimeout(() => setStatusMessage(null), 3000);
+    } catch (err) {
+      console.error(err);
+      setStatusMessage('Error updating ticket status.');
     }
   };
 
@@ -1123,6 +1207,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       onChange={(e) => setFormStock(parseInt(e.target.value) || 0)}
                       className="w-full px-3.5 py-2.5 rounded-xl border border-neutral-300 focus:border-red-800 focus:outline-none text-sm font-mono"
                     />
+                  </div>
+
+                  {/* Stock Status & COD Controls */}
+                  <div className="sm:col-span-3 pt-3 border-t border-neutral-100 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                      formIsOutOfStock ? 'border-red-600 bg-red-50 text-red-900' : 'border-emerald-300 bg-emerald-50/50 text-emerald-950'
+                    }`}>
+                      <input
+                        type="checkbox"
+                        checked={formIsOutOfStock}
+                        onChange={(e) => setFormIsOutOfStock(e.target.checked)}
+                        className="mt-0.5 rounded text-red-800 focus:ring-red-800"
+                      />
+                      <div>
+                        <span className="font-extrabold text-xs block">
+                          {formIsOutOfStock ? 'Marked as OUT OF STOCK' : 'In Stock (Active for Orders)'}
+                        </span>
+                        <span className="text-[11px] text-neutral-500 leading-tight block">
+                          {formIsOutOfStock 
+                            ? 'Product will be dimmed with highlighted "Out of Stock" banner and Buy Now hidden.' 
+                            : 'Normal active catalog ordering enabled.'}
+                        </span>
+                      </div>
+                    </label>
+
+                    <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+                      formCodAvailable ? 'border-neutral-300 bg-neutral-50 text-neutral-900' : 'border-neutral-200 bg-white text-neutral-500'
+                    }`}>
+                      <input
+                        type="checkbox"
+                        checked={formCodAvailable}
+                        onChange={(e) => setFormCodAvailable(e.target.checked)}
+                        className="mt-0.5 rounded text-neutral-900 focus:ring-neutral-900"
+                      />
+                      <div>
+                        <span className="font-extrabold text-xs block flex items-center gap-1.5">
+                          <Banknote className="w-3.5 h-3.5 text-neutral-800" />
+                          <span>Cash on Delivery (COD) Available</span>
+                        </span>
+                        <span className="text-[11px] text-neutral-500 leading-tight block">
+                          Displays premium monocolor Cash on Delivery symbol on product view.
+                        </span>
+                      </div>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -1996,6 +2124,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               <Building2 className="w-3.5 h-3.5" />
               <span>Footer & Mill Profile</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('support')}
+              className={`px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2 ${
+                activeTab === 'support'
+                  ? 'bg-red-800 text-white shadow-xs'
+                  : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+              }`}
+            >
+              <Headphones className="w-3.5 h-3.5" />
+              <span>Help & Support ({supportTickets.length})</span>
+              {supportTickets.filter(t => t.unreadByAdmin || t.status === 'new').length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-red-600 text-[10px] font-bold text-white">
+                  {supportTickets.filter(t => t.unreadByAdmin || t.status === 'new').length} new
+                </span>
+              )}
+            </button>
           </div>
 
           {/* Quick Actions per Tab */}
@@ -2204,6 +2349,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       </div>
                       <span className="text-[10px] text-neutral-400 font-medium">pcs</span>
                     </div>
+
+                    {/* 1-Click Stock Status Toggle */}
+                    <button
+                      type="button"
+                      disabled={updatingStockProdId === prod.id}
+                      onClick={() => handleToggleStockStatus(prod)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shadow-2xs ${
+                        prod.isOutOfStock
+                          ? 'bg-red-50 hover:bg-red-100 text-red-800 border-red-300 ring-1 ring-red-300/50'
+                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border-emerald-300'
+                      }`}
+                      title={prod.isOutOfStock ? 'Currently OUT OF STOCK (Click to mark IN STOCK)' : 'Currently IN STOCK (Click to mark OUT OF STOCK)'}
+                    >
+                      {prod.isOutOfStock ? (
+                        <>
+                          <AlertCircle className="w-3.5 h-3.5 text-red-700" />
+                          <span>Out of Stock</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-700" />
+                          <span>In Stock</span>
+                        </>
+                      )}
+                    </button>
 
                     <div className="text-left md:text-right">
                       <span className="text-base font-black text-neutral-900 font-heading">
@@ -4274,6 +4444,480 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             </div>
 
           </form>
+        )}
+
+        {/* TAB 8: HELP & SUPPORT TICKETS & REAL-TIME CHAT */}
+        {activeTab === 'support' && (
+          <div className="space-y-6">
+            
+            {/* Header Card & Status Filters */}
+            <div className="bg-white p-5 sm:p-6 rounded-2xl border border-neutral-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base sm:text-lg font-black font-heading text-neutral-900 flex items-center gap-2">
+                  <Headphones className="w-5 h-5 text-red-800" />
+                  <span>Buyer Help & Support Tickets ({supportTickets.length})</span>
+                </h3>
+                <p className="text-xs text-neutral-500 mt-1">
+                  Manage live inquiries, reply to buyer chats, resolve and close active tickets, and review buyer ratings & feedback.
+                </p>
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setSupportFilter('new')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    supportFilter === 'new'
+                      ? 'bg-red-800 text-white shadow-xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  <span>New & Unread</span>
+                  <span className="font-mono text-[10px] bg-black/20 px-1.5 py-0.2 rounded-full">
+                    {supportTickets.filter(t => t.status === 'new' || t.unreadByAdmin).length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSupportFilter('active')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    supportFilter === 'active'
+                      ? 'bg-emerald-800 text-white shadow-xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  <span>Active Chats</span>
+                  <span className="font-mono text-[10px] bg-black/20 px-1.5 py-0.2 rounded-full">
+                    {supportTickets.filter(t => t.status === 'active' && !t.unreadByAdmin).length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSupportFilter('closed')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all flex items-center gap-1.5 ${
+                    supportFilter === 'closed'
+                      ? 'bg-neutral-900 text-white shadow-xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  <span>Closed</span>
+                  <span className="font-mono text-[10px] bg-black/20 px-1.5 py-0.2 rounded-full">
+                    {supportTickets.filter(t => t.status === 'closed').length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSupportFilter('all')}
+                  className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                    supportFilter === 'all'
+                      ? 'bg-neutral-900 text-white shadow-xs'
+                      : 'bg-neutral-100 text-neutral-700 hover:bg-neutral-200'
+                  }`}
+                >
+                  <span>All ({supportTickets.length})</span>
+                </button>
+              </div>
+            </div>
+
+            {/* FULL-PAGE SUPPORT WORKSPACE */}
+            {(() => {
+              const activeAdminTicket = supportTickets.find(t => t.id === activeAdminTicketId) || null;
+
+              // CASE 1: FULL-PAGE TICKET CONVERSATION VIEW
+              if (activeAdminTicket) {
+                return (
+                  <div className="bg-white rounded-3xl border border-neutral-200 shadow-sm overflow-hidden flex flex-col animate-in fade-in duration-200">
+                    
+                    {/* Full-Page Conversation Top Bar */}
+                    <div className="p-4 sm:p-6 bg-neutral-900 text-white flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-neutral-800">
+                      <div className="flex items-start sm:items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => setActiveAdminTicketId(null)}
+                          className="px-3.5 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 flex-shrink-0"
+                          title="Return to Tickets List"
+                        >
+                          <ArrowLeft className="w-4 h-4 text-red-300" />
+                          <span>Back to All Tickets</span>
+                        </button>
+
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono text-xs font-black bg-white/20 px-2.5 py-0.5 rounded">
+                              #{activeAdminTicket.id}
+                            </span>
+                            <span className="text-xs text-red-200 font-bold uppercase tracking-wider">
+                              {activeAdminTicket.category}
+                            </span>
+                            <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase flex items-center gap-1 ${
+                              activeAdminTicket.status === 'closed'
+                                ? 'bg-neutral-800 text-neutral-300 border border-neutral-700'
+                                : activeAdminTicket.status === 'new'
+                                ? 'bg-amber-500 text-black font-black'
+                                : 'bg-emerald-600 text-white font-black'
+                            }`}>
+                              <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                              {activeAdminTicket.status}
+                            </span>
+                          </div>
+
+                          <h2 className="font-black text-base sm:text-xl text-white mt-1.5 leading-snug">
+                            {activeAdminTicket.subject}
+                          </h2>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 self-start md:self-auto flex-wrap">
+                        <button
+                          type="button"
+                          onClick={() => handleAdminToggleTicketStatus(activeAdminTicket.id, activeAdminTicket.status)}
+                          className={`px-4 py-2 rounded-xl font-black text-xs transition-all shadow-sm flex items-center gap-1.5 active:scale-95 ${
+                            activeAdminTicket.status === 'closed'
+                              ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                              : 'bg-red-700 hover:bg-red-800 text-white'
+                          }`}
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>{activeAdminTicket.status === 'closed' ? 'Reopen Ticket' : 'Close Ticket & Mark Resolved'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Buyer Information Strip */}
+                    <div className="bg-neutral-100 px-4 sm:px-6 py-3 border-b border-neutral-200 text-xs flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex items-center gap-4 flex-wrap text-neutral-700">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-neutral-400 font-medium">Buyer:</span>
+                          <strong className="text-neutral-900 font-bold">{activeAdminTicket.userName}</strong>
+                        </div>
+
+                        {activeAdminTicket.userPhone && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-neutral-400 font-medium">Phone:</span>
+                            <a 
+                              href={`tel:${activeAdminTicket.userPhone.replace(/\s+/g, '')}`} 
+                              className="font-mono text-red-800 font-bold hover:underline"
+                            >
+                              {activeAdminTicket.userPhone}
+                            </a>
+                          </div>
+                        )}
+
+                        {activeAdminTicket.userEmail && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-neutral-400 font-medium">Email:</span>
+                            <span className="text-neutral-800">{activeAdminTicket.userEmail}</span>
+                          </div>
+                        )}
+
+                        {activeAdminTicket.orderId && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-neutral-400 font-medium">Order Ref:</span>
+                            <span className="font-mono bg-red-100 text-red-900 px-2 py-0.5 rounded font-black">
+                              #{activeAdminTicket.orderId}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="text-[11px] text-neutral-500 font-mono">
+                        Ticket raised: {formatDate(activeAdminTicket.createdAt)}
+                      </div>
+                    </div>
+
+                    {/* Full-Width Spacious Messages Area */}
+                    <div className="flex-1 p-5 sm:p-8 overflow-y-auto space-y-4 bg-[#fbfbfa] min-h-[460px] max-h-[640px]">
+                      {(activeAdminTicket.messages || []).map((msg, i) => {
+                        const isAdmin = msg.sender === 'admin';
+
+                        return (
+                          <div 
+                            key={msg.id || i}
+                            className={`flex flex-col ${isAdmin ? 'items-end' : 'items-start'} max-w-3xl ${isAdmin ? 'ml-auto' : 'mr-auto'}`}
+                          >
+                            <div className="flex items-center gap-2 mb-1.5 px-1">
+                              <span className="text-[11px] font-black uppercase text-neutral-500 tracking-wider">
+                                {isAdmin ? 'Factory Support Desk (Admin)' : activeAdminTicket.userName}
+                              </span>
+                              <span className="text-[10px] text-neutral-400 font-mono">
+                                {formatDate(msg.timestamp)}
+                              </span>
+                            </div>
+
+                            <div className={`p-4 rounded-3xl text-sm leading-relaxed shadow-xs ${
+                              isAdmin
+                                ? 'bg-red-900 text-white rounded-tr-none'
+                                : 'bg-white text-neutral-900 border border-neutral-200 rounded-tl-none'
+                            }`}>
+                              <p className="whitespace-pre-wrap">{msg.text}</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Closed Ticket Feedback Summary or Active Reply Form */}
+                    {activeAdminTicket.status === 'closed' ? (
+                      <div className="p-6 bg-white border-t border-neutral-200 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                              <CheckCircle2 className="w-5 h-5" />
+                            </div>
+                            <div>
+                              <h4 className="font-bold text-sm text-neutral-900">This Ticket is Closed & Resolved</h4>
+                              <p className="text-xs text-neutral-500">
+                                Closed on {formatDate(activeAdminTicket.closedAt || activeAdminTicket.updatedAt)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleAdminToggleTicketStatus(activeAdminTicket.id, activeAdminTicket.status)}
+                            className="px-3.5 py-1.5 bg-neutral-900 hover:bg-black text-white rounded-xl text-xs font-bold transition-all"
+                          >
+                            Reopen Ticket to Reply
+                          </button>
+                        </div>
+
+                        {/* Buyer Star Rating & Feedback Display */}
+                        {typeof activeAdminTicket.rating === 'number' ? (
+                          <div className="p-4 bg-amber-50/70 border border-amber-200 rounded-2xl space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-neutral-800">Buyer Satisfaction Rating:</span>
+                              <div className="flex items-center gap-1 text-amber-500">
+                                {[1, 2, 3, 4, 5].map((s) => (
+                                  <Star
+                                    key={s}
+                                    className={`w-4 h-4 ${s <= (activeAdminTicket.rating || 0) ? 'fill-amber-400 text-amber-500' : 'text-neutral-300'}`}
+                                  />
+                                ))}
+                              </div>
+                              <span className="text-xs font-black text-neutral-900 font-mono ml-1">
+                                {activeAdminTicket.rating} / 5 Stars
+                              </span>
+                            </div>
+
+                            {activeAdminTicket.feedback && (
+                              <p className="text-xs text-neutral-700 italic pt-1 pl-2 border-l-2 border-amber-400">
+                                "{activeAdminTicket.feedback}"
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-neutral-400 italic">
+                            Buyer has not submitted feedback rating yet.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-4 sm:p-6 bg-white border-t border-neutral-200 space-y-3">
+                        {/* Canned Quick Response Chips */}
+                        <div className="flex items-center gap-2 flex-wrap text-xs">
+                          <span className="text-[11px] font-bold text-neutral-500 uppercase">Quick templates:</span>
+                          {[
+                            'Payment verified. Consignment packing in progress.',
+                            'Transport Bilti (LR) generated and updated in your profile.',
+                            'Stock checked with Tirupur mill manager, ready to dispatch.',
+                            'Issue resolved with transport cargo partner.'
+                          ].map((chip, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => setAdminReplyText(chip)}
+                              className="px-2.5 py-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-lg text-[11px] font-medium transition-colors border border-neutral-200"
+                            >
+                              + {chip}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Full-Page Reply Form */}
+                        <form onSubmit={handleAdminSendReply} className="flex flex-col sm:flex-row items-stretch gap-3">
+                          <textarea
+                            rows={2}
+                            required
+                            placeholder="Type official factory reply to buyer..."
+                            value={adminReplyText}
+                            onChange={(e) => setAdminReplyText(e.target.value)}
+                            className="flex-1 px-4 py-3 rounded-2xl border border-neutral-300 focus:border-red-800 focus:outline-none text-sm text-neutral-900 resize-none shadow-2xs"
+                          />
+                          <button
+                            type="submit"
+                            disabled={isAdminSendingReply || !adminReplyText.trim()}
+                            className="px-6 py-3 bg-red-800 hover:bg-red-900 disabled:opacity-40 text-white font-black text-xs sm:text-sm rounded-2xl transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
+                          >
+                            <Send className="w-4 h-4" />
+                            <span>Send Official Reply</span>
+                          </button>
+                        </form>
+                      </div>
+                    )}
+
+                  </div>
+                );
+              }
+
+              // CASE 2: FULL-PAGE TICKETS CATALOG LIST
+              const filteredTickets = supportTickets.filter(t => {
+                if (supportFilter === 'new') return t.status === 'new' || t.unreadByAdmin;
+                if (supportFilter === 'active') return t.status === 'active' && !t.unreadByAdmin;
+                if (supportFilter === 'closed') return t.status === 'closed';
+                return true;
+              }).filter(t => {
+                if (!adminTicketSearch.trim()) return true;
+                const q = adminTicketSearch.toLowerCase();
+                return (
+                  t.id.toLowerCase().includes(q) ||
+                  t.subject.toLowerCase().includes(q) ||
+                  t.userName.toLowerCase().includes(q) ||
+                  (t.userPhone && t.userPhone.toLowerCase().includes(q)) ||
+                  (t.orderId && t.orderId.toLowerCase().includes(q))
+                );
+              });
+
+              return (
+                <div className="space-y-4">
+                  {/* Search Bar */}
+                  <div className="relative max-w-md">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+                    <input
+                      type="text"
+                      placeholder="Search tickets by buyer, phone, order #, or subject..."
+                      value={adminTicketSearch}
+                      onChange={(e) => setAdminTicketSearch(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2.5 bg-white rounded-xl border border-neutral-300 focus:border-red-800 focus:outline-none text-xs text-neutral-900 shadow-2xs"
+                    />
+                  </div>
+
+                  {filteredTickets.length === 0 ? (
+                    <div className="bg-white rounded-3xl p-12 border border-neutral-200 text-center space-y-3">
+                      <div className="w-14 h-14 rounded-2xl bg-neutral-100 text-neutral-400 flex items-center justify-center mx-auto">
+                        <Headphones className="w-7 h-7" />
+                      </div>
+                      <h4 className="font-bold text-base text-neutral-800">No Tickets Found</h4>
+                      <p className="text-xs text-neutral-500 max-w-sm mx-auto">
+                        {supportFilter === 'new'
+                          ? 'No new or unread tickets from buyers.'
+                          : supportFilter === 'active'
+                          ? 'No ongoing active tickets.'
+                          : 'No tickets matched your filter or search query.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {filteredTickets.map((t) => {
+                        const lastMsg = t.messages?.[t.messages.length - 1];
+
+                        return (
+                          <div
+                            key={t.id}
+                            onClick={() => {
+                              setActiveAdminTicketId(t.id);
+                              if (t.unreadByAdmin) {
+                                markTicketRead(t.id, 'admin');
+                              }
+                            }}
+                            className={`p-5 rounded-3xl border transition-all cursor-pointer bg-white hover:border-red-800 hover:shadow-md flex flex-col justify-between relative ${
+                              t.unreadByAdmin
+                                ? 'border-red-400 bg-red-50/20 ring-1 ring-red-400/40'
+                                : 'border-neutral-200'
+                            }`}
+                          >
+                            {t.unreadByAdmin && (
+                              <span className="absolute top-4 right-4 w-3 h-3 rounded-full bg-red-600 animate-pulse shadow-sm" />
+                            )}
+
+                            <div>
+                              <div className="flex items-center justify-between gap-2 mb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono text-xs font-black text-neutral-900 bg-neutral-100 px-2.5 py-0.5 rounded">
+                                    #{t.id}
+                                  </span>
+                                  <span className="text-[10px] font-bold uppercase text-neutral-500">
+                                    {t.category}
+                                  </span>
+                                </div>
+
+                                <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full uppercase ${
+                                  t.status === 'closed'
+                                    ? 'bg-neutral-100 text-neutral-700 border border-neutral-300'
+                                    : t.status === 'new'
+                                    ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                    : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                }`}>
+                                  {t.status}
+                                </span>
+                              </div>
+
+                              <h3 className="font-bold text-sm sm:text-base text-neutral-900 line-clamp-2 leading-snug">
+                                {t.subject}
+                              </h3>
+
+                              <div className="flex items-center gap-2 text-xs text-neutral-600 mt-2 flex-wrap">
+                                <span className="font-bold text-neutral-800">{t.userName}</span>
+                                {t.userPhone && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="font-mono">{t.userPhone}</span>
+                                  </>
+                                )}
+                                {t.orderId && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="font-mono text-red-800 font-bold">Order #{t.orderId}</span>
+                                  </>
+                                )}
+                              </div>
+
+                              {lastMsg && (
+                                <p className="text-xs text-neutral-500 line-clamp-2 mt-2.5 bg-neutral-50 p-2.5 rounded-xl border border-neutral-100">
+                                  <strong className="text-neutral-700">{lastMsg.sender === 'admin' ? 'Admin' : 'Buyer'}:</strong> {lastMsg.text}
+                                </p>
+                              )}
+
+                              {/* If ticket is closed and has user rating */}
+                              {t.status === 'closed' && typeof t.rating === 'number' && (
+                                <div className="mt-3 pt-2 border-t border-neutral-100 flex items-center justify-between text-xs">
+                                  <div className="flex items-center gap-1 text-amber-500">
+                                    {[1, 2, 3, 4, 5].map((s) => (
+                                      <Star
+                                        key={s}
+                                        className={`w-3.5 h-3.5 ${s <= (t.rating || 0) ? 'fill-amber-400 text-amber-500' : 'text-neutral-300'}`}
+                                      />
+                                    ))}
+                                    <span className="text-[11px] font-bold text-neutral-700 ml-1 font-mono">
+                                      {t.rating}/5 Rating
+                                    </span>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center justify-between mt-4 pt-3 border-t border-neutral-100 text-[11px]">
+                              <span className="text-neutral-400 font-mono">
+                                {formatDate(t.updatedAt || t.createdAt)}
+                              </span>
+                              <span className="font-black text-red-800 flex items-center gap-1 group-hover:translate-x-1 transition-transform">
+                                <span>Open Full Chat</span>
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+          </div>
         )}
 
       </main>
